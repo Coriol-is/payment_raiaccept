@@ -10,8 +10,8 @@ jobs:
     name: Static checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Byte-compile every Python file
@@ -41,8 +41,8 @@ jobs:
     name: RaiAccept protocol tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install pytest
@@ -69,8 +69,10 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Run module tests
+        # The odoo image's default shell is dash, which has no pipefail.
+        shell: bash
         run: |
           set -o pipefail
           ln -s "$GITHUB_WORKSPACE/payment_raiffeisen" \
@@ -83,6 +85,7 @@ jobs:
                --test-tags /payment_raiffeisen \
                --stop-after-init --log-level=test 2>&1 | tee odoo.log
       - name: Assert the suite actually ran and passed
+        shell: bash
         run: |
           python - <<'PY'
           import re, sys
