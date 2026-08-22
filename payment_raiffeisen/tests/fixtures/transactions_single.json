@@ -1,0 +1,14 @@
+{
+    "transactionId": "R-001-TX-ab2301a6-104c-436e-bf60-ccc0bc9d6ae2",
+    "transactionAmount": 4000.00,
+    "transactionCurrency": "RSD",
+    "isProduction": false,
+    "transactionType": "PURCHASE",
+    "paymentMethod": "CARD",
+    "status": "SUCCESS",
+    "statusCode": "0000",
+    "statusMessage": "Success",
+    "createdOn": "2023-03-08T10:19:55Z",
+    "updatedOn": "2023-03-08T10:19:56Z",
+    "recurringType": "NONE"
+}

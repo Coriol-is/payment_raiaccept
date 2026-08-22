@@ -1,20 +1,21 @@
 import logging
-from urllib.parse import urlparse, parse_qsl, urlunparse
+from urllib.parse import quote, urlparse, parse_qsl, urlunparse
 
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
+from odoo.http import request
+
+from ..raiaccept import (
+    ORDER_STATUS_MAP,
+    TRANSACTION_STATUS_MAP,
+    gateway_amount,
+    normalize_webhook,
+    sanitize_merchant_reference,
+    select_purchase_transaction,
+    unwrap_transaction,
+)
 
 _logger = logging.getLogger(__name__)
-
-# RaiAccept status → Odoo transaction state
-_STATUS_MAP = {
-    "PENDING": "pending",
-    "SUCCESS": "done",
-    "PAID": "done",
-    "FAILED": "error",
-    "CANCELED": "cancel",
-    "ABANDONED": "error",
-}
 
 
 class PaymentTransaction(models.Model):
@@ -28,6 +29,13 @@ class PaymentTransaction(models.Model):
         string="RaiAccept Transaction ID",
         readonly=True,
     )
+    raiffeisen_merchant_reference = fields.Char(
+        string="RaiAccept Merchant Order Reference",
+        readonly=True,
+        help="The sanitized reference actually sent to RaiAccept. It "
+             "can differ from the Odoo reference, which may contain "
+             "characters the gateway rejects.",
+    )
     raiffeisen_gateway_currency = fields.Char(
         string="Gateway Currency (snapshot)",
         readonly=True,
@@ -40,13 +48,41 @@ class PaymentTransaction(models.Model):
         help="Exchange rate at checkout time, snapshotted from provider.",
     )
 
-    # ── FIX #1: Use _get_specific_rendering_values (not processing) ──
+    # ── Helpers ──────────────────────────────────────────────────────
+
+    def _raiffeisen_merchant_reference(self):
+        """Return an API-safe merchant order reference for this tx."""
+        self.ensure_one()
+        return sanitize_merchant_reference(
+            self.reference, fallback=f"ODOO-{self.id}"
+        )
+
+    def _raiffeisen_return_url(self, base_url):
+        """Return the customer-facing callback URL for this tx."""
+        self.ensure_one()
+        return (
+            f"{base_url}/payment/raiffeisen/return"
+            f"?ref={quote(self.reference or '', safe='')}"
+        )
+
+    def _raiffeisen_consumer_ip(self):
+        """Return the customer's IP address when one is available.
+
+        RaiAccept marks `ipAddress` as recommended: sending it raises
+        the chance of a frictionless 3-D Secure flow. It is only known
+        when the checkout runs inside an HTTP request.
+        """
+        self.ensure_one()
+        if request and request.httprequest:
+            return request.httprequest.remote_addr or ""
+        return ""
+
+    # ── Redirect rendering ───────────────────────────────────────────
 
     def _get_specific_rendering_values(self, processing_values):
         """Override of payment to return Raiffeisen-specific rendering values.
 
         Creates the RaiAccept order and returns the redirect URL.
-        This is the correct hook for redirect-based providers in Odoo 19.
 
         Note: self.ensure_one() from `_get_processing_values`
         """
@@ -63,24 +99,36 @@ class PaymentTransaction(models.Model):
             self.raiffeisen_currency_rate = (
                 provider.raiffeisen_currency_rate or 1.0
             )
+            self.raiffeisen_merchant_reference = \
+                self._raiffeisen_merchant_reference()
 
             redirect_url = provider._raiffeisen_create_order_and_checkout(self)
         except ValidationError as error:
+            # Returning an empty dict would leave `api_url` undefined
+            # and make QWeb raise while rendering the redirect form, so
+            # the customer would get a traceback instead of the reason.
+            # Point the form at the payment status page, where Odoo
+            # shows the error message set here.
             self._set_error(str(error))
-            return {}
+            return {"api_url": "/payment/status", "url_params": {}}
 
-        # The redirect_form template uses <form method="get">, which
-        # causes browsers to strip any query string on the action URL
-        # and rebuild it from the form's hidden inputs. Split the
-        # RaiAccept redirect URL so the query params are passed as
-        # url_params (they become <input type="hidden"> fields) and
-        # the action URL is just the path.
+        # The redirect form submits with method="get", which makes the
+        # browser drop any query string on the action URL and rebuild
+        # it from the form's hidden inputs. Split the RaiAccept URL so
+        # the query params survive as hidden fields.
         parsed = urlparse(redirect_url)
         api_url = urlunparse(
             (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
         )
         url_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
         return {"api_url": api_url, "url_params": url_params}
+
+    # ── Webhook payload normalization ────────────────────────────────
+
+    @api.model
+    def _raiffeisen_normalize_webhook(self, payload):
+        """Flatten a RaiAccept webhook body into flat payment data."""
+        return normalize_webhook(payload)
 
     # ── Reference extraction ─────────────────────────────────────────
 
@@ -96,8 +144,8 @@ class PaymentTransaction(models.Model):
             return ref
 
         # Webhook: resolve by transactionId FIRST (critical for refunds,
-        # since refund child tx shares the same orderIdentification/
-        # merchantOrderReference as the parent payment tx)
+        # since a refund child shares the parent's orderIdentification
+        # and merchantOrderReference)
         tx_id = payment_data.get("transactionId")
         if tx_id:
             tx = self.search(
@@ -106,10 +154,17 @@ class PaymentTransaction(models.Model):
             if tx:
                 return tx.reference
 
-        # Then try merchantOrderReference (unique per payment)
-        ref = payment_data.get("merchantOrderReference")
-        if ref:
-            return ref
+        # Then the merchant reference we actually sent, which may have
+        # been sanitized and so differ from the Odoo reference.
+        merchant_ref = payment_data.get("merchantOrderReference")
+        if merchant_ref:
+            tx = self.search(
+                [("raiffeisen_merchant_reference", "=", merchant_ref)],
+                limit=1,
+            )
+            if tx:
+                return tx.reference
+            return merchant_ref
 
         # Fallback: look up by gateway orderIdentification
         order_id = payment_data.get("orderIdentification")
@@ -122,13 +177,14 @@ class PaymentTransaction(models.Model):
 
         return super()._extract_reference(provider_code, payment_data)
 
-    # ── FIX #3: Amount validation — return None to skip base check ───
+    # ── Amount validation ────────────────────────────────────────────
 
     def _extract_amount_data(self, payment_data):
         """Override of payment to skip base amount validation.
 
-        Return None → Odoo skips amount validation. We do authoritative
-        amount verification in _apply_updates by querying the gateway.
+        Return None → Odoo skips amount validation. The webhook body is
+        not authoritative, so the amount is verified in `_apply_updates`
+        against a fresh read of the order from the API.
         """
         if self.provider_code != "raiffeisen":
             return super()._extract_amount_data(payment_data)
@@ -137,175 +193,196 @@ class PaymentTransaction(models.Model):
     # ── Apply gateway status updates ─────────────────────────────────
 
     def _apply_updates(self, payment_data):
-        """Process the RaiAccept payment response and update state.
-
-        FIX #3 continued: We verify amount/currency against the
-        gateway response here, since we skipped base amount validation.
-        """
+        """Process the RaiAccept payment response and update state."""
         super()._apply_updates(payment_data)
         if self.provider_code != "raiffeisen":
             return
 
-        gateway_status = "PENDING"
+        # A webhook is the only place the gateway volunteers the
+        # transaction id, and the order endpoint never returns one, so
+        # record it whenever it shows up.
+        notified_tx_id = payment_data.get("transactionId")
+        if notified_tx_id and not self.raiffeisen_tx_id:
+            self.raiffeisen_tx_id = notified_tx_id
+
         if not self.raiffeisen_order_id:
             self._set_pending()
             return
 
-        # Refund child transactions: handle async status updates
-        # without re-querying the parent order's invoice amount
-        is_refund = bool(self.source_transaction_id)
+        if self.source_transaction_id:
+            self._raiffeisen_apply_refund_updates()
+        else:
+            self._raiffeisen_apply_payment_updates()
 
-        # Query the gateway authoritatively
+    def _raiffeisen_apply_payment_updates(self):
+        """Verify and apply the gateway's view of a payment."""
+        self.ensure_one()
         try:
             order_data = self.provider_id._raiffeisen_get_order_status(
                 self.raiffeisen_order_id
             )
-
-            if is_refund:
-                # For refund callbacks, find our specific transaction
-                # by raiffeisen_tx_id in the order's transaction list
-                txs = order_data.get("transactions", [])
-                refund_tx = next(
-                    (t for t in txs
-                     if t.get("transactionId") == self.raiffeisen_tx_id),
-                    None,
-                )
-                if refund_tx:
-                    gateway_status = refund_tx.get("status", "PENDING")
-                    # Verify refund amount matches what we requested
-                    gw_refund_amt = refund_tx.get("amount")
-                    if gw_refund_amt is not None:
-                        rate = self.raiffeisen_currency_rate or 1.0
-                        gw_currency = (
-                            self.raiffeisen_gateway_currency or "RSD"
-                        )
-                        factor = self.provider_id._raiffeisen_minor_unit_factor(
-                            gw_currency
-                        )
-                        expected = int(
-                            round(abs(self.amount) * rate * factor)
-                        )
-                        if abs(gw_refund_amt - expected) > 1:
-                            self._set_error(
-                                state_message=_(
-                                    "Refund amount mismatch: gateway "
-                                    "returned %s, expected %s "
-                                    "(in minor units).",
-                                    gw_refund_amt, expected,
-                                )
-                            )
-                            return
-                else:
-                    # Our tx not in list yet; stay pending
-                    gateway_status = "PENDING"
-            else:
-                gateway_status = order_data.get("status", "PENDING")
-
-                # Extract transaction ID — prefer successful PURCHASE
-                txs = order_data.get("transactions", [])
-                if txs and not self.raiffeisen_tx_id:
-                    # First: successful PURCHASE
-                    purchase_tx = next(
-                        (t for t in txs
-                         if t.get("transactionType") == "PURCHASE"
-                         and t.get("status") in ("SUCCESS", "PAID")),
-                        None,
-                    )
-                    # Fallback: any PURCHASE, then first tx
-                    if not purchase_tx:
-                        purchase_tx = next(
-                            (t for t in txs
-                             if t.get("transactionType") == "PURCHASE"),
-                            txs[0],
-                        )
-                    self.raiffeisen_tx_id = purchase_tx.get(
-                        "transactionId"
-                    )
-
-                # Authoritative amount/currency verification
-                # using snapshotted values from checkout time
-                invoice = order_data.get("invoice", {})
-                gw_amount_cents = invoice.get("amount")
-                gw_currency = invoice.get("currency")
-                if gw_amount_cents is not None and gw_currency:
-                    rate = self.raiffeisen_currency_rate or 1.0
-                    factor = self.provider_id._raiffeisen_minor_unit_factor(
-                        gw_currency
-                    )
-                    expected_cents = int(
-                        round(self.amount * rate * factor)
-                    )
-                    expected_currency = (
-                        self.raiffeisen_gateway_currency or "RSD"
-                    )
-                    if gw_currency != expected_currency:
-                        self._set_error(
-                            state_message=_(
-                                "Currency mismatch: gateway returned "
-                                "%s, expected %s.",
-                                gw_currency, expected_currency,
-                            )
-                        )
-                        return
-                    # Allow 1 cent tolerance for rounding
-                    if abs(gw_amount_cents - expected_cents) > 1:
-                        self._set_error(
-                            state_message=_(
-                                "Amount mismatch: gateway returned "
-                                "%s, expected %s (in minor units).",
-                                gw_amount_cents, expected_cents,
-                            )
-                        )
-                        return
-
         except Exception:
             _logger.warning(
-                "Raiffeisen: could not query order %s status",
-                self.raiffeisen_order_id,
-                exc_info=True,
+                "Raiffeisen: could not query order %s",
+                self.raiffeisen_order_id, exc_info=True,
             )
             # Do NOT fall back to unverified notification data.
             self._set_pending()
             return
 
-        # Set provider reference for backend display
-        # Refund children use their unique tx_id for traceability
-        if is_refund:
-            self.provider_reference = self.raiffeisen_tx_id or ""
-        else:
-            self.provider_reference = (
-                self.raiffeisen_order_id or self.raiffeisen_tx_id or ""
+        if not self._raiffeisen_amount_matches(order_data):
+            return
+
+        # The order payload carries no transactions, so when the id is
+        # still unknown, ask the transactions endpoint for it. A failure
+        # here is not fatal for the payment — it only costs the ability
+        # to refund from Odoo later.
+        if not self.raiffeisen_tx_id:
+            self._raiffeisen_fetch_purchase_tx_id()
+
+        self.provider_reference = (
+            self.raiffeisen_order_id or self.raiffeisen_tx_id or ""
+        )
+        status = order_data.get("status") or ""
+        self._raiffeisen_set_state(
+            ORDER_STATUS_MAP.get(status), status,
+        )
+
+    def _raiffeisen_apply_refund_updates(self):
+        """Apply the gateway's view of a refund child transaction."""
+        self.ensure_one()
+        if not self.raiffeisen_tx_id:
+            self._set_pending()
+            return
+        try:
+            data = self.provider_id._raiffeisen_get_transaction(
+                self.raiffeisen_order_id, self.raiffeisen_tx_id,
             )
+        except Exception:
+            _logger.warning(
+                "Raiffeisen: could not query refund transaction %s",
+                self.raiffeisen_tx_id, exc_info=True,
+            )
+            self._set_pending()
+            return
 
-        # Map gateway status to Odoo state
-        odoo_state = _STATUS_MAP.get(gateway_status, "pending")
+        tx_data = unwrap_transaction(data)
+        if not self._raiffeisen_refund_amount_matches(tx_data):
+            return
 
-        if odoo_state == "done":
+        self.provider_reference = self.raiffeisen_tx_id
+        status = tx_data.get("status") or ""
+        self._raiffeisen_set_state(
+            TRANSACTION_STATUS_MAP.get(status), status,
+        )
+
+    def _raiffeisen_fetch_purchase_tx_id(self):
+        """Store the id of this order's PURCHASE transaction."""
+        self.ensure_one()
+        try:
+            txs = self.provider_id._raiffeisen_list_transactions(
+                self.raiffeisen_order_id
+            )
+        except Exception:
+            _logger.warning(
+                "Raiffeisen: could not list transactions of order %s; "
+                "refunds from Odoo will not be possible until it is known.",
+                self.raiffeisen_order_id, exc_info=True,
+            )
+            return
+        purchase = select_purchase_transaction(txs)
+        if purchase and purchase.get("transactionId"):
+            self.raiffeisen_tx_id = purchase["transactionId"]
+
+    # ── Verification helpers ─────────────────────────────────────────
+
+    def _raiffeisen_amount_matches(self, order_data):
+        """Return True when the gateway's invoice matches our snapshot.
+
+        Sets the transaction to error and returns False otherwise.
+        """
+        self.ensure_one()
+        invoice = order_data.get("invoice") or {}
+        gw_amount = invoice.get("amount")
+        gw_currency = invoice.get("currency")
+        if gw_amount is None or not gw_currency:
+            return True  # Nothing to compare against.
+
+        expected_currency = self.raiffeisen_gateway_currency or "RSD"
+        if gw_currency != expected_currency:
+            self._set_error(state_message=_(
+                "Currency mismatch: gateway returned %s, expected %s.",
+                gw_currency, expected_currency,
+            ))
+            return False
+
+        expected = gateway_amount(
+            self.amount, self.raiffeisen_currency_rate
+        )
+        if abs(float(gw_amount) - expected) > 0.01:
+            self._set_error(state_message=_(
+                "Amount mismatch: gateway returned %s, expected %s.",
+                gw_amount, expected,
+            ))
+            return False
+        return True
+
+    def _raiffeisen_refund_amount_matches(self, tx_data):
+        """Return True when a refund's gateway amount matches ours."""
+        self.ensure_one()
+        gw_amount = tx_data.get("transactionAmount")
+        if gw_amount is None:
+            return True
+        expected = gateway_amount(
+            abs(self.amount), self.raiffeisen_currency_rate
+        )
+        if abs(float(gw_amount) - expected) > 0.01:
+            self._set_error(state_message=_(
+                "Refund amount mismatch: gateway returned %s, expected %s.",
+                gw_amount, expected,
+            ))
+            return False
+        return True
+
+    def _raiffeisen_set_state(self, odoo_state, gateway_status):
+        """Move the transaction to the state the gateway reports.
+
+        An unmapped status is left pending and logged rather than
+        guessed at: the documented sets are closed, so an unknown value
+        means the API changed and a human needs to look.
+        """
+        self.ensure_one()
+        if odoo_state is None:
+            _logger.warning(
+                "Raiffeisen: unmapped gateway status %r on %s; "
+                "leaving the transaction pending.",
+                gateway_status, self.reference,
+            )
+            self._set_pending()
+        elif odoo_state == "done":
             self._set_done()
         elif odoo_state == "cancel":
-            self._set_canceled(
-                state_message=_(
-                    "Payment was canceled on Raiffeisen gateway."
-                )
-            )
+            self._set_canceled(state_message=_(
+                "Payment was canceled on the Raiffeisen gateway (%s).",
+                gateway_status,
+            ))
         elif odoo_state == "error":
-            self._set_error(
-                state_message=_(
-                    "Payment failed on Raiffeisen gateway (%s).",
-                    gateway_status,
-                )
-            )
+            self._set_error(state_message=_(
+                "Payment failed on the Raiffeisen gateway (%s).",
+                gateway_status,
+            ))
         else:
             self._set_pending()
 
-    # ── FIX #4: Refund — close the state machine via _process ────────
+    # ── Refund ───────────────────────────────────────────────────────
 
     def _send_refund_request(self):
         """Override of payment to send a refund request to RaiAccept.
 
-        In Odoo 19, this is called on the CHILD refund transaction.
-        Gateway IDs come from the source (parent) transaction.
-        After API call, we process the response to close the state machine.
+        Called on the CHILD refund transaction; the gateway ids come
+        from the source transaction. The refund response contains only
+        `transactionId`, so the resulting state is read back from the
+        transaction endpoint rather than guessed from the response.
         """
         if self.provider_code != "raiffeisen":
             return super()._send_refund_request()
@@ -318,55 +395,49 @@ class PaymentTransaction(models.Model):
 
         order_id = source_tx.raiffeisen_order_id
         tx_id = source_tx.raiffeisen_tx_id
-        if not order_id or not tx_id:
+        if not order_id:
             raise ValidationError(
-                _("Cannot refund: missing Raiffeisen order or "
-                  "transaction ID on the original payment.")
+                _("Cannot refund: the original payment has no "
+                  "Raiffeisen order id.")
+            )
+        if not tx_id:
+            # The order endpoint never returns transaction ids, so an
+            # older payment may not have one recorded yet. Fetch it now
+            # instead of refusing the refund outright.
+            source_tx._raiffeisen_fetch_purchase_tx_id()
+            tx_id = source_tx.raiffeisen_tx_id
+        if not tx_id:
+            raise ValidationError(
+                _("Cannot refund: the Raiffeisen transaction id of the "
+                  "original payment could not be determined.")
             )
 
-        # Use snapshotted rate/currency from the source transaction
         rate = source_tx.raiffeisen_currency_rate or 1.0
         currency = source_tx.raiffeisen_gateway_currency or "RSD"
-        # self.amount is negative for refunds; use abs
-        factor = self.provider_id._raiffeisen_minor_unit_factor(currency)
-        amount_cents = int(round(abs(self.amount) * rate * factor))
-
-        # Send refund to RaiAccept
         provider = self.provider_id
+        # self.amount is negative for refunds; the gateway wants a
+        # positive number.
+        amount = gateway_amount(abs(self.amount), rate)
+
         resp = provider._raiffeisen_refund(
-            order_id, tx_id, amount_cents, currency
+            order_id, tx_id, amount, currency
         )
 
-        # Store IDs
         refund_tx_id = resp.get("transactionId", "")
         self.raiffeisen_order_id = order_id
         self.raiffeisen_tx_id = refund_tx_id
         self.raiffeisen_gateway_currency = currency
         self.raiffeisen_currency_rate = rate
+        self.raiffeisen_merchant_reference = \
+            source_tx.raiffeisen_merchant_reference
         self.provider_reference = refund_tx_id
 
-        # Verify refund amount from gateway response
-        gw_refund_amt = resp.get("amount")
-        if gw_refund_amt is not None and abs(gw_refund_amt - amount_cents) > 1:
-            self._set_error(
-                state_message=_(
-                    "Refund amount mismatch: gateway returned %s, "
-                    "expected %s (in minor units).",
-                    gw_refund_amt, amount_cents,
-                )
-            )
+        if not refund_tx_id:
+            self._set_error(state_message=_(
+                "Raiffeisen accepted the refund but returned no "
+                "transaction id, so its outcome cannot be confirmed."
+            ))
             return
 
-        # Close state machine based on actual gateway response
-        refund_status = resp.get("status", "")
-        if refund_status in ("SUCCESS", "PAID"):
-            self._set_done()
-        elif refund_status == "PENDING":
-            self._set_pending()
-        else:
-            self._set_error(
-                state_message=_(
-                    "Refund failed on Raiffeisen gateway (%s).",
-                    refund_status,
-                )
-            )
+        # Read the refund's real status back from the gateway.
+        self._raiffeisen_apply_refund_updates()
