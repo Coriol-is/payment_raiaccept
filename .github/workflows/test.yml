@@ -87,7 +87,8 @@ jobs:
       - name: Assert the suite actually ran and passed
         shell: bash
         run: |
-          python - <<'PY'
+          # The odoo image ships python3 only — there is no `python`.
+          python3 - <<'PY'
           import re, sys
           log = open("odoo.log", encoding="utf-8", errors="replace").read()
           match = re.search(
