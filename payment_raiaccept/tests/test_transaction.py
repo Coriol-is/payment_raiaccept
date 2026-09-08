@@ -19,7 +19,7 @@ from .common import RaiffeisenCommon
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 
-PROVIDER = "odoo.addons.payment_raiffeisen.models.payment_provider.PaymentProvider"
+PROVIDER = "odoo.addons.payment_raiaccept.models.payment_provider.PaymentProvider"
 
 
 def fixture(name):

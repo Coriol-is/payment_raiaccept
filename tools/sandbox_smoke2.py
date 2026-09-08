@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "payment_raiffeisen"))
+sys.path.insert(0, str(REPO / "payment_raiaccept"))
 from raiaccept import (  # noqa: E402
     API_BASE,
     AUTH_BASE,

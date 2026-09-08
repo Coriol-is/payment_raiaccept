@@ -15,12 +15,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile every Python file
-        run: python -m compileall -q payment_raiffeisen
+        run: python -m compileall -q payment_raiaccept
       - name: Parse every XML data file
         run: |
           python - <<'PY'
           import pathlib, xml.etree.ElementTree as ET
-          files = sorted(pathlib.Path("payment_raiffeisen").rglob("*.xml"))
+          files = sorted(pathlib.Path("payment_raiaccept").rglob("*.xml"))
           assert files, "no XML data files found"
           for path in files:
               ET.parse(path)
@@ -30,7 +30,7 @@ jobs:
         run: |
           python - <<'PY'
           import ast, pathlib
-          root = pathlib.Path("payment_raiffeisen")
+          root = pathlib.Path("payment_raiaccept")
           manifest = ast.literal_eval((root / "__manifest__.py").read_text())
           missing = [f for f in manifest["data"] if not (root / f).is_file()]
           assert not missing, f"declared but absent: {missing}"
@@ -75,14 +75,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ln -s "$GITHUB_WORKSPACE/payment_raiffeisen" \
-                /mnt/extra-addons/payment_raiffeisen
+          ln -s "$GITHUB_WORKSPACE/payment_raiaccept" \
+                /mnt/extra-addons/payment_raiaccept
           # --log-level=test is required: at warn level Odoo prints no
           # test results at all, so a green run is indistinguishable
           # from tests that never executed.
           odoo --db_host=postgres --db_user=odoo --db_password=odoo \
-               -d raiffeisen_ci -i payment_raiffeisen \
-               --test-tags /payment_raiffeisen \
+               -d raiffeisen_ci -i payment_raiaccept \
+               --test-tags /payment_raiaccept \
                --stop-after-init --log-level=test 2>&1 | tee odoo.log
       - name: Assert the suite actually ran and passed
         shell: bash

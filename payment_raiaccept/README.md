@@ -191,5 +191,5 @@ Adria Mart (https://adriamart.rs).
 
 ## Support
 
-- GitHub Issues: https://github.com/Coriol-is/payment_raiffeisen/issues
+- GitHub Issues: https://github.com/Coriol-is/payment_raiaccept/issues
 - Email: odoo@coriol.co

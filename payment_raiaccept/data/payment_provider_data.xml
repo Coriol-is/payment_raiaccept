@@ -11,7 +11,7 @@
         <field name="primary_payment_method_id" ref="payment.payment_method_card"/>
         <field name="image"
                type="base64"
-               file="payment_raiffeisen/static/src/img/dinacard.png"/>
+               file="payment_raiaccept/static/src/img/dinacard.png"/>
     </record>
 
     <record id="payment_provider_raiffeisen" model="payment.provider">
@@ -19,7 +19,7 @@
         <field name="code">raiffeisen</field>
         <field name="image_128"
                type="base64"
-               file="payment_raiffeisen/static/description/icon.png"/>
+               file="payment_raiaccept/static/description/icon.png"/>
         <field name="redirect_form_view_id" ref="redirect_form"/>
         <!--
             Link the PRIMARY Card method (required for Odoo's
@@ -36,9 +36,9 @@
                    ref('payment.payment_method_card'),
                    ref('payment.payment_method_visa'),
                    ref('payment.payment_method_mastercard'),
-                   ref('payment_raiffeisen.payment_method_dinacard'),
+                   ref('payment_raiaccept.payment_method_dinacard'),
                ])]"/>
-        <field name="module_id" ref="base.module_payment_raiffeisen"/>
+        <field name="module_id" ref="base.module_payment_raiaccept"/>
         <field name="available_country_ids"
                eval="[(6, 0, [
                    ref('base.rs'),

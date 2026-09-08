@@ -3,7 +3,7 @@
 
 Reads credentials from the repo-root .env (gitignored) and walks the
 same call sequence the Odoo module makes, using the protocol constants
-from payment_raiffeisen.raiaccept:
+from payment_raiaccept.raiaccept:
 
   1. POST /auth/api/login        with integrationContext
   2. POST /auth/api/refresh      with the refresh token
@@ -24,7 +24,7 @@ from pathlib import Path
 import requests
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "payment_raiffeisen"))
+sys.path.insert(0, str(REPO / "payment_raiaccept"))
 from raiaccept import (  # noqa: E402
     API_BASE,
     AUTH_BASE,

@@ -15,11 +15,11 @@ Open-source Odoo 19 payment provider module for **Raiffeisen Bank RaiAccept** ga
 
 ## Install
 
-- **From source**: clone this repo and copy `payment_raiffeisen/` into your Odoo addons path.
+- **From source**: clone this repo and copy `payment_raiaccept/` into your Odoo addons path.
 
-> The `payment_raiffeisen` listing currently on the Odoo Apps Store is the
-> original Adria Mart build, which predates the API realignment in this fork.
-> Until this fork is published there, install from source.
+> The module's technical name in this fork is **`payment_raiaccept`** — the
+> `payment_raiffeisen` name on the Odoo Apps Store belongs to the original
+> Adria Mart build, which predates the API realignment in this fork.
 
 ## Highlights
 
@@ -36,7 +36,7 @@ Supported markets: Serbia, Austria, Croatia, Bosnia & Herzegovina, Kosovo, Alban
 ## Repository layout
 
 ```
-payment_raiffeisen/        The actual Odoo module (copy this into your addons path)
+payment_raiaccept/        The actual Odoo module (copy this into your addons path)
   ├── README.md            Detailed docs, changelog, supported cards/countries
   ├── __manifest__.py      Module manifest
   ├── controllers/         Webhook + redirect handlers
@@ -46,23 +46,23 @@ payment_raiffeisen/        The actual Odoo module (copy this into your addons pa
   └── static/description/  Apps Store assets
 ```
 
-Full documentation is in [`payment_raiffeisen/README.md`](payment_raiffeisen/README.md).
+Full documentation is in [`payment_raiaccept/README.md`](payment_raiaccept/README.md).
 
 ## Documentation
 
 - RaiAccept API reference, test cards, onboarding: [docs.raiaccept.com](https://docs.raiaccept.com/index.html)
-- Module README: [`payment_raiffeisen/README.md`](payment_raiffeisen/README.md)
+- Module README: [`payment_raiaccept/README.md`](payment_raiaccept/README.md)
 
 ## License
 
-LGPL-3 — see [`payment_raiffeisen/LICENSE`](payment_raiffeisen/LICENSE).
+LGPL-3 — see [`payment_raiaccept/LICENSE`](payment_raiaccept/LICENSE).
 
 ## Maintainer
 
 This fork is maintained by **Coriolis Lab** — [coriol.co](https://coriol.co/) — publisher of
 Odoo apps for the Serbian market. Pull requests and issues welcome.
 
-- GitHub Issues: [Coriol-is/payment_raiffeisen/issues](https://github.com/Coriol-is/payment_raiffeisen/issues)
+- GitHub Issues: [Coriol-is/payment_raiaccept/issues](https://github.com/Coriol-is/payment_raiaccept/issues)
 
 ### Original module
 

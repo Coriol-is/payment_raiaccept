@@ -16,8 +16,8 @@ from odoo.tests import tagged
 
 from .common import RaiffeisenCommon
 
-AUTH_PATH = "odoo.addons.payment_raiffeisen.models.payment_provider.requests.post"
-REQ_PATH = "odoo.addons.payment_raiffeisen.models.payment_provider.requests.request"
+AUTH_PATH = "odoo.addons.payment_raiaccept.models.payment_provider.requests.post"
+REQ_PATH = "odoo.addons.payment_raiaccept.models.payment_provider.requests.request"
 
 
 class _Response:
