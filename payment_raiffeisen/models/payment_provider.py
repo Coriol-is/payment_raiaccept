@@ -181,7 +181,30 @@ class PaymentProvider(models.Model):
         }
         if invalidating & set(vals) and not _TOKEN_FIELDS & set(vals):
             vals = dict(vals, **{f: False for f in _TOKEN_FIELDS})
-        return super().write(vals)
+        res = super().write(vals)
+        if vals.get("state") in ("enabled", "test"):
+            self.filtered(
+                lambda p: p.code == "raiffeisen"
+            )._raiffeisen_activate_brand_methods()
+        return res
+
+    def _raiffeisen_activate_brand_methods(self):
+        """Unarchive the card brands so their icons render at checkout.
+
+        Core ships the visa/mastercard payment.method records archived,
+        and archived records silently drop out of the provider's m2m —
+        the checkout then shows only the DinaCard icon. They cannot be
+        activated at install time either: payment.method.write refuses
+        to activate a brand while every provider supporting it is
+        disabled. So they are activated here, the moment the provider
+        itself is enabled or put in test mode.
+        """
+        brands = self.env["payment.method"].with_context(
+            active_test=False
+        ).search([("code", "in", ("visa", "mastercard"))])
+        brands.filtered(lambda m: not m.active).write({"active": True})
+        for provider in self:
+            provider.payment_method_ids = [(4, m.id) for m in brands]
 
     # ── Feature support ──────────────────────────────────────────────
 
