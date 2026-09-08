@@ -92,6 +92,24 @@ class TestOrderPayload(RaiffeisenCommon):
     def test_payment_method_preference_is_card(self):
         self.assertEqual(self._payload()["paymentMethodPreference"], "CARD")
 
+    def test_wallet_method_sets_the_matching_preference(self):
+        for xmlid, expected in (
+            ("payment_raiaccept.payment_method_apple_pay", "APPLE_PAY"),
+            ("payment_raiaccept.payment_method_google_pay", "GOOGLE_PAY"),
+        ):
+            method = self.env.ref(xmlid)
+            tx = self._create_tx(reference=f"S-{expected}")
+            tx.payment_method_id = method
+            payload = self.provider._raiffeisen_build_order_payload(tx)
+            self.assertEqual(payload["paymentMethodPreference"], expected)
+
+    def test_wallet_methods_ship_archived(self):
+        for xmlid in (
+            "payment_raiaccept.payment_method_apple_pay",
+            "payment_raiaccept.payment_method_google_pay",
+        ):
+            self.assertFalse(self.env.ref(xmlid).active)
+
 
 @tagged("post_install", "-at_install")
 class TestReferenceResolution(RaiffeisenCommon):

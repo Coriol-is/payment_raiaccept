@@ -18,6 +18,7 @@ from ..raiaccept import (
     format_phone,
     integration_context,
     normalize_transaction_list,
+    payment_method_preference,
     transliterate,
 )
 
@@ -202,10 +203,19 @@ class PaymentProvider(models.Model):
         brands = self.env["payment.method"].with_context(
             active_test=False
         ).search([("code", "in", ("visa", "mastercard"))])
+        # The archived wallet methods are linked too (but not activated:
+        # wallets exist only on merchant accounts where the bank enabled
+        # them). Without the link, core's write guard would refuse the
+        # merchant's own manual activation.
+        wallets = self.env["payment.method"].with_context(
+            active_test=False
+        ).search([("code", "in", ("apple_pay", "google_pay"))])
         # Link first: activating a payment.method passes core's check only
         # when an enabled/test provider already supports it.
         for provider in self:
-            provider.payment_method_ids = [(4, m.id) for m in brands]
+            provider.payment_method_ids = [
+                (4, m.id) for m in (brands | wallets)
+            ]
         try:
             brands.filtered(lambda m: not m.active).write({"active": True})
         except UserError:
@@ -586,7 +596,12 @@ class PaymentProvider(models.Model):
                     f"{base_url}/payment/raiffeisen/webhook"
                 ),
             },
-            "paymentMethodPreference": "CARD",
+            # The wallet method codes open the hosted page directly in
+            # that wallet; anything else falls back to CARD, where
+            # merchant-enabled wallets still appear alongside cards.
+            "paymentMethodPreference": payment_method_preference(
+                tx.payment_method_id.code
+            ),
         }
 
     # ── Order / transaction queries ──────────────────────────────────

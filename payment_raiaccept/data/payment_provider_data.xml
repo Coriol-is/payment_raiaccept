@@ -14,6 +14,36 @@
                file="payment_raiaccept/static/src/img/dinacard.png"/>
     </record>
 
+    <!--
+        Wallet methods. Odoo 19 core ships no apple_pay/google_pay
+        payment.method records, so they are created here — archived,
+        because RaiAccept shows a wallet only when the bank has enabled
+        it on the merchant account, and the Sandbox has no wallets at
+        all. A merchant whose account has them activates the method
+        (Payment Providers -> Configuration -> Enable Payment Methods);
+        selecting it at checkout opens the hosted page directly in that
+        wallet via paymentMethodPreference. The icons are neutral
+        placeholders - replace with the official marks (per Apple's and
+        Google's brand guidelines) before promoting them prominently.
+    -->
+    <record id="payment_method_apple_pay" model="payment.method">
+        <field name="name">Apple Pay</field>
+        <field name="code">apple_pay</field>
+        <field name="active" eval="False"/>
+        <field name="image"
+               type="base64"
+               file="payment_raiaccept/static/src/img/apple_pay.png"/>
+    </record>
+
+    <record id="payment_method_google_pay" model="payment.method">
+        <field name="name">Google Pay</field>
+        <field name="code">google_pay</field>
+        <field name="active" eval="False"/>
+        <field name="image"
+               type="base64"
+               file="payment_raiaccept/static/src/img/google_pay.png"/>
+    </record>
+
     <record id="payment_provider_raiffeisen" model="payment.provider">
         <field name="name">Raiffeisen RaiAccept</field>
         <field name="code">raiffeisen</field>

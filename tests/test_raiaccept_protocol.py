@@ -234,3 +234,12 @@ def test_documented_refund_amount_is_decimal():
     tx = raiaccept.unwrap_transaction(load_fixture("transaction_refund.json"))
     assert tx["transactionAmount"] == 2000.00
     assert raiaccept.gateway_amount(2000) == tx["transactionAmount"]
+
+
+def test_payment_method_preference_maps_wallets_and_defaults_to_card():
+    assert raiaccept.payment_method_preference("apple_pay") == "APPLE_PAY"
+    assert raiaccept.payment_method_preference("google_pay") == "GOOGLE_PAY"
+    assert raiaccept.payment_method_preference("card") == "CARD"
+    assert raiaccept.payment_method_preference("visa") == "CARD"
+    assert raiaccept.payment_method_preference(None) == "CARD"
+    assert raiaccept.payment_method_preference("") == "CARD"
