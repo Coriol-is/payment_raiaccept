@@ -1,5 +1,6 @@
 # Odoo 19 Payment Provider: Raiffeisen RaiAccept
 
+[![Odoo Apps](https://img.shields.io/badge/Odoo%20Apps-Available-875A7B)](https://apps.odoo.com/apps/modules/19.0/payment_raiaccept)
 [![License: LGPL-3](https://img.shields.io/badge/License-LGPL--3-blue.svg)](https://www.gnu.org/licenses/lgpl-3.0)
 [![Odoo Version](https://img.shields.io/badge/Odoo-19.0-875A7B)](https://www.odoo.com/documentation/19.0/)
 
@@ -15,6 +16,7 @@ Open-source Odoo 19 payment provider module for **Raiffeisen Bank RaiAccept** ga
 
 ## Install
 
+- **Odoo Apps Store** (recommended): [apps.odoo.com/apps/modules/19.0/payment_raiaccept](https://apps.odoo.com/apps/modules/19.0/payment_raiaccept)
 - **From source**: clone this repo and copy `payment_raiaccept/` into your Odoo addons path.
 
 > The module's technical name in this fork is **`payment_raiaccept`** — the
