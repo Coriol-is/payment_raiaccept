@@ -30,7 +30,7 @@ API_BASE = "https://trapi.raiaccept.com"
 # someone else's integration. INTEGRATION_VERSION is asserted against
 # the manifest version by the test suite.
 INTEGRATION_VENDOR = "Coriolis Lab"
-INTEGRATION_VERSION = "19.0.2.0.0"
+INTEGRATION_VERSION = "19.0.2.1.0"
 
 # Refresh the access token this many seconds before it actually
 # expires, so a request never starts with a token that dies in flight.
@@ -61,6 +61,23 @@ TRANSACTION_STATUS_MAP = {
 # Documented transaction response code for success. Everything else is
 # an error code listed under "Transaction responses and error codes".
 SUCCESS_STATUS_CODE = "0000"
+
+# ── Payment method preference ────────────────────────────────────────
+# `paymentMethodPreference` is a required ENUM of the create-order and
+# checkout requests: CARD, GOOGLE_PAY or APPLE_PAY, exactly one value.
+# With CARD, wallets that are enabled on the merchant account still
+# appear on the hosted page alongside cards; the wallet values make the
+# hosted page open directly in that wallet. Wallets do not exist in the
+# Sandbox environment.
+PAYMENT_METHOD_PREFERENCES = {
+    "apple_pay": "APPLE_PAY",
+    "google_pay": "GOOGLE_PAY",
+}
+
+
+def payment_method_preference(method_code):
+    """Map an Odoo payment.method code to a gateway preference."""
+    return PAYMENT_METHOD_PREFERENCES.get(method_code or "", "CARD")
 
 # ── Field constraints ────────────────────────────────────────────────
 # RaiAccept accepts only these characters in merchantOrderReference,
