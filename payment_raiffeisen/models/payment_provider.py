@@ -1,40 +1,37 @@
 import logging
-import re
-import unicodedata
+from datetime import timedelta
 from urllib.parse import urljoin
 
 import requests
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
+
+from ..raiaccept import (
+    API_BASE,
+    AUTH_BASE,
+    COUNTRY_ISO3,
+    LOGIN_ENDPOINT,
+    REFRESH_ENDPOINT,
+    TOKEN_EXPIRY_MARGIN,
+    gateway_amount,
+    format_phone,
+    integration_context,
+    normalize_transaction_list,
+    transliterate,
+)
 
 _logger = logging.getLogger(__name__)
 
-# ── RaiAccept API Constants ──────────────────────────────────────────
-RAIACCEPT_AUTH_URL = "https://authenticate.raiaccept.com"
-RAIACCEPT_AUTH_CLIENT_ID = "kr2gs4117arvbnaperqff5dml"
-RAIACCEPT_API_BASE = "https://trapi.raiaccept.com"
 
-# ISO 3166-1 alpha-2 → alpha-3 (comprehensive)
-_COUNTRY_ISO3 = {
-    # SEE / CEE (primary market)
-    "AL": "ALB", "AT": "AUT", "BA": "BIH", "BG": "BGR", "CH": "CHE",
-    "CZ": "CZE", "DE": "DEU", "GR": "GRC", "HR": "HRV", "HU": "HUN",
-    "ME": "MNE", "MK": "MKD", "PL": "POL", "RO": "ROU", "RS": "SRB",
-    "SI": "SVN", "SK": "SVK", "XK": "XKX",
-    # Western Europe
-    "BE": "BEL", "DK": "DNK", "ES": "ESP", "FI": "FIN", "FR": "FRA",
-    "GB": "GBR", "IE": "IRL", "IT": "ITA", "LU": "LUX", "NL": "NLD",
-    "NO": "NOR", "PT": "PRT", "SE": "SWE",
-    # Eastern Europe / CIS
-    "BY": "BLR", "EE": "EST", "LT": "LTU", "LV": "LVA", "MD": "MDA",
-    "RU": "RUS", "UA": "UKR",
-    # Middle East / Asia / Americas (common)
-    "AE": "ARE", "AU": "AUS", "BR": "BRA", "CA": "CAN", "CN": "CHN",
-    "IL": "ISR", "IN": "IND", "JP": "JPN", "KR": "KOR", "MX": "MEX",
-    "NZ": "NZL", "SA": "SAU", "SG": "SGP", "TR": "TUR", "US": "USA",
-    "ZA": "ZAF",
-}
+# Cached tokens are cleared whenever the identity behind them
+# changes; see `write` below.
+_TOKEN_FIELDS = frozenset({
+    "raiffeisen_access_token",
+    "raiffeisen_access_token_expiry",
+    "raiffeisen_refresh_token",
+    "raiffeisen_refresh_token_expiry",
+})
 
 
 class PaymentProvider(models.Model):
@@ -81,16 +78,43 @@ class PaymentProvider(models.Model):
              "Set to 1.0 if store and gateway currencies are the same.",
     )
 
-    # ── Webhook security (added 19.0.1.6.0) ──────────────────────────
-    # Defense-in-depth for /payment/raiffeisen/webhook. Defaults are
-    # safe-by-default conservative: empty IP allowlist = log-only,
-    # signature mode "off" = no enforcement until merchant captures a
-    # real prod webhook payload and confirms the wire format with
-    # RaiAccept (the legacy Shop_Gateway_Interface_Token_eng.pdf
-    # describes form-POST + RSA, but the modern RaiAccept Documentation
-    # Portal serves a JSON webhook whose signature scheme has to be
-    # verified against an actual payload before we hardcode the
-    # canonicalization order).
+    # ── Token cache ──────────────────────────────────────────────────
+    # RaiAccept issues a short-lived access token (~299 s) plus a
+    # long-lived refresh token (~86399 s). Re-sending the credentials
+    # on every API call is not just wasteful: the auth service answers
+    # `AUTH_PASSWORD_ATTEMPTS_EXCEEDED`, so a busy shop can lock its
+    # own merchant credentials out. Cache both tokens on the provider
+    # and refresh with the refresh token.
+
+    raiffeisen_access_token = fields.Char(
+        string="Cached Access Token",
+        copy=False,
+        groups="base.group_system",
+    )
+    raiffeisen_access_token_expiry = fields.Datetime(
+        string="Access Token Expiry",
+        copy=False,
+        groups="base.group_system",
+    )
+    raiffeisen_refresh_token = fields.Char(
+        string="Cached Refresh Token",
+        copy=False,
+        groups="base.group_system",
+    )
+    raiffeisen_refresh_token_expiry = fields.Datetime(
+        string="Refresh Token Expiry",
+        copy=False,
+        groups="base.group_system",
+    )
+
+    # ── Webhook security ─────────────────────────────────────────────
+    # The documented webhook carries no signature and no shared secret
+    # (https://docs.raiaccept.com/code-integration.html, "Webhook
+    # notification"), so there is nothing to verify cryptographically.
+    # Authenticity comes from `_apply_updates` re-fetching the order
+    # from the API before believing anything; the IP allowlist below is
+    # an optional extra hop for merchants whose bank contact confirmed
+    # the egress addresses.
 
     raiffeisen_webhook_allowed_ips = fields.Char(
         string="Webhook Allowed Source IPs",
@@ -108,52 +132,8 @@ class PaymentProvider(models.Model):
              "see the proxy IP, so allowlist that proxy IP instead. "
              "X-Forwarded-For is intentionally NOT trusted directly "
              "by this controller — that header is client-controlled.\n\n"
-             "Per the legacy Shop_Gateway_Interface doc the UPC test "
-             "server posts from 195.85.198.16 and prod from "
-             "195.85.198.15. Confirm the actual RaiAccept Serbia "
-             "egress IPs with pos-ecommerce@raiffeisenbank.rs before "
-             "hard-enforcing in production.",
-    )
-    raiffeisen_webhook_signature_mode = fields.Selection(
-        [
-            ("off", "Off (log only)"),
-            ("warn", "Warn (log mismatches, accept anyway)"),
-            ("enforce",
-             "Enforce (HARD REJECT — also fails when verifier "
-             "stub-returns)"),
-        ],
-        string="Webhook Signature Verification",
-        default="off",
-        copy=False,
-        groups="base.group_system",
-        help="Controls whether the webhook signature is verified.\n\n"
-             "off (default) — relies on the gateway re-fetch in "
-             "_apply_updates to verify amount + currency authoritatively. "
-             "Safe baseline.\n\n"
-             "warn — verify the signature when present, log a warning "
-             "on mismatch (sig_ok=False) but still process. Use during "
-             "the first prod week to capture real-payload mismatches "
-             "without breaking.\n\n"
-             "enforce — accept ONLY when the verifier returns True. "
-             "Mismatches (False) AND unverified payloads (None — "
-             "verifier stub or cert missing) both reject with HTTP 403. "
-             "Do NOT switch this on until the real RSA verifier is "
-             "implemented (current verifier is a stub returning None) "
-             "and you have captured real prod payloads + confirmed "
-             "the canonicalization scheme. Otherwise webhooks will "
-             "hard-fail.",
-    )
-    raiffeisen_webhook_server_cert_pem = fields.Text(
-        string="Gateway Public Certificate (PEM)",
-        copy=False,
-        groups="base.group_system",
-        help="The bank's public X.509 certificate (PEM format) used to "
-             "verify webhook signatures. Issued by RaiAccept Onboarding "
-             "with the merchant credential pack — corresponds to the "
-             "`test-server.cert` (sandbox) / production server cert "
-             "files in the integration ZIP. Populate this field before "
-             "switching `Webhook Signature Verification` away from "
-             "`off`.",
+             "Confirm the actual RaiAccept egress IPs with your bank "
+             "contact before enforcing this in production.",
     )
 
     # ── State-aware credential validation ────────────────────────────
@@ -186,6 +166,56 @@ class PaymentProvider(models.Model):
                     _("Currency rate must be a positive number.")
                 )
 
+    def write(self, vals):
+        """Drop cached tokens whenever the identity behind them changes.
+
+        Switching between sandbox and production, or rotating the API
+        password in the Merchant portal, makes every cached token
+        worthless. Keeping one would send a token minted for the other
+        environment and produce a 401 on the customer's checkout.
+        """
+        invalidating = {
+            "state",
+            "raiffeisen_api_username", "raiffeisen_api_password",
+            "raiffeisen_sandbox_username", "raiffeisen_sandbox_password",
+        }
+        if invalidating & set(vals) and not _TOKEN_FIELDS & set(vals):
+            vals = dict(vals, **{f: False for f in _TOKEN_FIELDS})
+        res = super().write(vals)
+        if vals.get("state") in ("enabled", "test"):
+            self.filtered(
+                lambda p: p.code == "raiffeisen"
+            )._raiffeisen_activate_brand_methods()
+        return res
+
+    def _raiffeisen_activate_brand_methods(self):
+        """Unarchive the card brands so their icons render at checkout.
+
+        Core ships the visa/mastercard payment.method records archived,
+        and archived records silently drop out of the provider's m2m —
+        the checkout then shows only the DinaCard icon. They cannot be
+        activated at install time either: payment.method.write refuses
+        to activate a brand while every provider supporting it is
+        disabled. So they are activated here, the moment the provider
+        itself is enabled or put in test mode.
+        """
+        brands = self.env["payment.method"].with_context(
+            active_test=False
+        ).search([("code", "in", ("visa", "mastercard"))])
+        # Link first: activating a payment.method passes core's check only
+        # when an enabled/test provider already supports it.
+        for provider in self:
+            provider.payment_method_ids = [(4, m.id) for m in brands]
+        try:
+            brands.filtered(lambda m: not m.active).write({"active": True})
+        except UserError:
+            # Purely cosmetic (brand icons at checkout) — never block
+            # enabling the provider over it.
+            _logger.warning(
+                "Raiffeisen: could not activate the card brand methods; "
+                "enable Visa/Mastercard manually under Payment Methods."
+            )
+
     # ── Feature support ──────────────────────────────────────────────
 
     def _compute_feature_support_fields(self):
@@ -194,7 +224,7 @@ class PaymentProvider(models.Model):
             "support_refund": "partial",
         })
 
-    # ── Webhook security helpers (19.0.1.6.0) ────────────────────────
+    # ── Webhook security helpers ─────────────────────────────────────
 
     def _raiffeisen_webhook_allowed_ip_list(self):
         """Parse the comma-separated allowed-IP field into a set.
@@ -216,9 +246,6 @@ class PaymentProvider(models.Model):
         Returns (True, "no allowlist configured") when the merchant
         hasn't set any IPs (log-only mode). Returns (True, "matched")
         when remote_ip is in the configured set, else (False, "...").
-        Caller decides what to do with the booleans — the controller
-        rejects on False; the verification mode field also influences
-        the final decision.
         """
         self.ensure_one()
         allowed = self._raiffeisen_webhook_allowed_ip_list()
@@ -227,61 +254,6 @@ class PaymentProvider(models.Model):
         if remote_ip in allowed:
             return (True, "ip in allowlist")
         return (False, f"ip {remote_ip} not in allowlist")
-
-    def _raiffeisen_verify_webhook_signature(self, payload, signature):
-        """Verify a webhook payload signature against the gateway cert.
-
-        Currently a stub returning (None, "signature scheme not yet
-        implemented") because the JSON webhook signature canonicalization
-        used by modern RaiAccept (Serbia branding) needs to be confirmed
-        against real prod payloads — the legacy 2019 UPC documentation
-        describes a form-POST + RSA scheme that does not match the
-        current JSON shape.
-
-        Roadmap for filling in this method (after prod cutover):
-
-        1. Capture 5-10 real webhook POST bodies from prod (signed by
-           the bank, served from ~195.85.198.0/24 or whatever IP range
-           RaiAccept Serbia actually uses).
-        2. Cross-reference with the canonicalization order specified in
-           the RaiAccept Documentation Portal (the link sent in
-           Raiffeisen 2026-04-24 11:56 production-approval email).
-        3. Implement the verifier here using `cryptography` library:
-
-               from cryptography.hazmat.primitives import hashes, serialization
-               from cryptography.hazmat.primitives.asymmetric import padding
-
-               cert = x509.load_pem_x509_certificate(
-                   self.raiffeisen_webhook_server_cert_pem.encode()
-               )
-               public_key = cert.public_key()
-               try:
-                   public_key.verify(
-                       base64.b64decode(signature),
-                       canonical_payload_bytes,
-                       padding.PKCS1v15(),
-                       hashes.SHA1(),  # confirm with portal docs
-                   )
-                   return (True, "signature valid")
-               except InvalidSignature:
-                   return (False, "signature invalid")
-
-        4. Add real round-trip tests with a fixture cert + payload.
-
-        Until then, this stub returns None to signal "verification not
-        attempted"; the controller logs and either accepts (off / warn
-        modes) or rejects with a clear error (enforce mode).
-
-        Returns: (None | True | False, human-readable reason).
-        """
-        self.ensure_one()
-        if self.raiffeisen_webhook_signature_mode == "off":
-            return (None, "signature mode 'off' — verification skipped")
-        if not self.raiffeisen_webhook_server_cert_pem:
-            return (None, "gateway public cert not configured")
-        # TODO: implement real RSA verification once prod-payload
-        # canonicalization is confirmed (see roadmap above).
-        return (None, "signature scheme not yet implemented (stub)")
 
     # ── Credential helpers ───────────────────────────────────────────
 
@@ -298,61 +270,140 @@ class PaymentProvider(models.Model):
             self.raiffeisen_api_password or "",
         )
 
+    def _raiffeisen_integration_context(self):
+        """Return the `integrationContext` object required by auth.
+
+        `name` identifies the merchant's store; `vendor` and `version`
+        identify who wrote and maintains the integration.
+        """
+        self.ensure_one()
+        return integration_context(self.company_id.name)
+
     # ── Authentication ───────────────────────────────────────────────
 
-    def _raiffeisen_authenticate(self):
-        """Obtain a JWT access token via AWS Cognito USER_PASSWORD_AUTH."""
+    def _raiffeisen_auth_request(self, endpoint, payload):
+        """POST to the RaiAccept Auth Service and return the JSON body."""
+        self.ensure_one()
+        url = urljoin(AUTH_BASE, endpoint)
+        try:
+            resp = requests.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            body = ""
+            if exc.response is not None:
+                body = exc.response.text or ""
+            _logger.error(
+                "Raiffeisen auth %s failed: %s. Body: %s",
+                endpoint, exc, body,
+            )
+            raise ValidationError(
+                _("Failed to authenticate with Raiffeisen: %s")
+                % (body[:300] or str(exc))
+            ) from exc
+
+    def _raiffeisen_store_tokens(self, data):
+        """Persist the tokens returned by login or refresh.
+
+        The refresh response carries only an access token, so the
+        refresh token and its expiry are left untouched in that case.
+        """
+        self.ensure_one()
+        now = fields.Datetime.now()
+        access_token = data.get("accessToken")
+        if not access_token:
+            raise ValidationError(
+                _("Raiffeisen authentication failed: "
+                  "no access token in response.")
+            )
+        vals = {
+            "raiffeisen_access_token": access_token,
+            "raiffeisen_access_token_expiry": now + timedelta(
+                seconds=int(data.get("accessTokenExpiresIn") or 0)
+            ),
+        }
+        if data.get("refreshToken"):
+            vals["raiffeisen_refresh_token"] = data["refreshToken"]
+            vals["raiffeisen_refresh_token_expiry"] = now + timedelta(
+                seconds=int(data.get("refreshTokenExpiresIn") or 0)
+            )
+        self.sudo().write(vals)
+        return access_token
+
+    def _raiffeisen_login(self):
+        """Authenticate with the API credentials and cache the tokens."""
         self.ensure_one()
         username, password = self._raiffeisen_get_credentials()
         if not username or not password:
             raise ValidationError(
                 _("Raiffeisen API credentials are not configured.")
             )
-
-        payload = {
-            "AuthFlow": "USER_PASSWORD_AUTH",
-            "AuthParameters": {
-                "USERNAME": username,
-                "PASSWORD": password,
+        data = self._raiffeisen_auth_request(
+            LOGIN_ENDPOINT,
+            {
+                "username": username,
+                "password": password,
+                "integrationContext": self._raiffeisen_integration_context(),
             },
-            "ClientId": RAIACCEPT_AUTH_CLIENT_ID,
-        }
-        headers = {
-            "Content-Type": "application/x-amz-json-1.1",
-            "X-Amz-Target": (
-                "AWSCognitoIdentityProviderService.InitiateAuth"
-            ),
-        }
+        )
+        return self._raiffeisen_store_tokens(data)
 
+    def _raiffeisen_refresh_access_token(self):
+        """Mint a new access token from the cached refresh token.
+
+        Returns None when there is no usable refresh token or the
+        refresh call fails, so the caller falls back to a full login.
+        """
+        self.ensure_one()
+        now = fields.Datetime.now()
+        expiry = self.raiffeisen_refresh_token_expiry
+        if not self.raiffeisen_refresh_token or not expiry \
+                or expiry <= now + timedelta(seconds=TOKEN_EXPIRY_MARGIN):
+            return None
         try:
-            resp = requests.post(
-                RAIACCEPT_AUTH_URL,
-                json=payload,
-                headers=headers,
-                timeout=15,
+            data = self._raiffeisen_auth_request(
+                REFRESH_ENDPOINT,
+                {
+                    "refreshToken": self.raiffeisen_refresh_token,
+                    "integrationContext":
+                        self._raiffeisen_integration_context(),
+                },
             )
-            resp.raise_for_status()
-            data = resp.json()
-            token = data.get("AuthenticationResult", {}).get("AccessToken")
-            if not token:
-                raise ValidationError(
-                    _("Raiffeisen authentication failed: "
-                      "no access token in response.")
-                )
-            return token
-        except requests.RequestException as exc:
-            _logger.error("Raiffeisen auth error: %s", exc)
-            raise ValidationError(
-                _("Failed to authenticate with Raiffeisen: %s") % str(exc)
-            ) from exc
+        except ValidationError:
+            _logger.info(
+                "Raiffeisen: refresh token rejected, falling back to login."
+            )
+            return None
+        return self._raiffeisen_store_tokens(data)
+
+    def _raiffeisen_get_access_token(self, force_new=False):
+        """Return a usable access token, minting one only when needed.
+
+        Order of preference: the cached access token, then a refresh,
+        then a full login with the merchant credentials.
+        """
+        self.ensure_one()
+        now = fields.Datetime.now()
+        expiry = self.raiffeisen_access_token_expiry
+        if not force_new and self.raiffeisen_access_token and expiry \
+                and expiry > now + timedelta(seconds=TOKEN_EXPIRY_MARGIN):
+            return self.raiffeisen_access_token
+        return self._raiffeisen_refresh_access_token() \
+            or self._raiffeisen_login()
 
     # ── API request ──────────────────────────────────────────────────
 
-    def _raiffeisen_api_request(self, method, endpoint, payload=None):
+    def _raiffeisen_api_request(self, method, endpoint, payload=None,
+                                _retried=False):
         """Make an authenticated request to the RaiAccept API."""
         self.ensure_one()
-        token = self._raiffeisen_authenticate()
-        url = urljoin(RAIACCEPT_API_BASE, endpoint)
+        token = self._raiffeisen_get_access_token(force_new=_retried)
+        url = urljoin(API_BASE, endpoint)
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -366,8 +417,18 @@ class PaymentProvider(models.Model):
                 headers=headers,
                 timeout=30,
             )
+            # A cached token can be revoked server-side before it
+            # expires. Retry exactly once with a freshly minted one.
+            if resp.status_code == 401 and not _retried:
+                _logger.info(
+                    "Raiffeisen API %s %s -> 401, re-authenticating once.",
+                    method, endpoint,
+                )
+                return self._raiffeisen_api_request(
+                    method, endpoint, payload, _retried=True,
+                )
             if resp.status_code >= 400:
-                # Log full response body to aid debugging RaiAccept
+                # Log the full response body to aid debugging RaiAccept
                 # validation errors. RaiAccept returns JSON with
                 # field-level error details on 400 responses.
                 _logger.error(
@@ -412,7 +473,8 @@ class PaymentProvider(models.Model):
             )
         tx.raiffeisen_order_id = order_id
 
-        # Step 2: Create payment session (checkout)
+        # Step 2: Create payment session (checkout). The docs require
+        # the same parameters and values as step 1.
         checkout_resp = self._raiffeisen_api_request(
             "POST", f"/orders/{order_id}/checkout", order_payload
         )
@@ -424,17 +486,9 @@ class PaymentProvider(models.Model):
         return redirect_url
 
     @staticmethod
-    def _raiffeisen_minor_unit_factor(currency):
-        """Return the multiplier that converts a major-unit amount
-        into RaiAccept's minor unit for the given gateway currency.
-
-        RaiAccept expects whole integers:
-        - RSD: zero-decimal — RaiAccept stores and displays whole
-          dinars. Sending 82500 shows as "82,500.00 RSD", not
-          "825.00 RSD". So factor = 1.
-        - EUR: two-decimal cents — factor = 100.
-        """
-        return 1 if (currency or "").upper() == "RSD" else 100
+    def _raiffeisen_gateway_amount(amount, rate=1.0):
+        """Convert a store amount into the amount RaiAccept expects."""
+        return gateway_amount(amount, rate)
 
     def _raiffeisen_build_order_payload(self, tx):
         """Build the CreateOrderEntryRequest payload from a transaction."""
@@ -442,18 +496,12 @@ class PaymentProvider(models.Model):
         partner = tx.partner_id
 
         gateway_currency = self.raiffeisen_gateway_currency or "RSD"
-
-        # Amount in gateway minor units.
-        # See _raiffeisen_minor_unit_factor for currency-specific rules.
-        amount = tx.amount
-        rate = self.raiffeisen_currency_rate or 1.0
-        if rate > 0:
-            amount = amount * rate
-        factor = self._raiffeisen_minor_unit_factor(gateway_currency)
-        amount_cents = int(round(amount * factor))
+        amount = self._raiffeisen_gateway_amount(
+            tx.amount, self.raiffeisen_currency_rate
+        )
 
         country_a2 = partner.country_id.code or ""
-        country_a3 = _COUNTRY_ISO3.get(country_a2)
+        country_a3 = COUNTRY_ISO3.get(country_a2)
         if not country_a3:
             raise ValidationError(
                 _("Cannot process payment: country '%s' (%s) is not "
@@ -463,7 +511,7 @@ class PaymentProvider(models.Model):
             )
 
         # Strip trailing slash to avoid double-slash in callback URLs like
-        # "https://adriamart.rs//payment/raiffeisen/return".
+        # "https://example.rs//payment/raiffeisen/return".
         base_url = self.get_base_url().rstrip("/")
 
         name_parts = (partner.name or "Customer").split()
@@ -472,22 +520,21 @@ class PaymentProvider(models.Model):
             else first_name
 
         billing_address = {
-            "firstName": _transliterate(first_name),
-            "lastName": _transliterate(last_name),
-            "addressStreet1": _transliterate(partner.street or "N/A"),
-            "city": _transliterate(partner.city or "N/A"),
-            "postalCode": _transliterate(partner.zip or "00000"),
+            "firstName": transliterate(first_name, 32),
+            "lastName": transliterate(last_name, 32),
+            "addressStreet1": transliterate(partner.street or "N/A", 50),
+            "city": transliterate(partner.city or "N/A", 50),
+            "postalCode": transliterate(partner.zip or "00000", 16),
             "country": country_a3,
         }
         if partner.street2:
-            billing_address["addressStreet2"] = _transliterate(
-                partner.street2
+            billing_address["addressStreet2"] = transliterate(
+                partner.street2, 50
             )
-        # RaiAccept requires state to be an ISO 3166-2 subdivision code
-        # with max length 3. Odoo's res.country.state.code is typically
-        # like "RS-00" or "00" — strip the country prefix and truncate.
-        # If we can't produce a ≤3 char code, omit the state field
-        # (RaiAccept accepts empty state).
+        # RaiAccept caps `state` at 3 characters. Odoo's
+        # res.country.state.code is typically "RS-00" or "00" — strip
+        # the country prefix, and omit the field when no short code can
+        # be produced (the field is optional).
         if partner.state_id and partner.state_id.code:
             raw_code = partner.state_id.code
             if "-" in raw_code:
@@ -498,43 +545,43 @@ class PaymentProvider(models.Model):
         consumer = {
             "firstName": billing_address["firstName"],
             "lastName": billing_address["lastName"],
-            "email": partner.email or "noreply@example.com",
+            "email": partner.email or "",
         }
-        # Odoo 19 merged partner.mobile into partner.phone; use phone for both.
-        if partner.phone:
-            phone_digits = re.sub(r"\D", "", partner.phone)
-            consumer["phone"] = phone_digits
-            consumer["mobilePhone"] = phone_digits
+        # Odoo 19 merged partner.mobile into partner.phone. RaiAccept
+        # accepts "+381..." or "00381...", max 15 chars, no spaces.
+        phone = format_phone(partner.phone)
+        if phone:
+            consumer["phone"] = phone
+            consumer["mobilePhone"] = phone
+        consumer_ip = tx._raiffeisen_consumer_ip()
+        if consumer_ip:
+            consumer["ipAddress"] = consumer_ip
 
-        invoice_items = [{
-            "description": _transliterate(tx.reference or "Order"),
-            "numberOfItems": 1,
-            "price": amount_cents,
-        }]
+        merchant_reference = tx.raiffeisen_merchant_reference \
+            or tx._raiffeisen_merchant_reference()
+        description = transliterate(tx.reference or "Order", 200)
 
         return {
             "billingAddress": billing_address,
             "shippingAddress": billing_address,
             "consumer": consumer,
             "invoice": {
-                "amount": amount_cents,
+                "amount": amount,
                 "currency": gateway_currency,
-                "merchantOrderReference": tx.reference[:127],
-                "items": invoice_items,
+                "description": description,
+                "merchantOrderReference": merchant_reference,
+                "items": [{
+                    "description": transliterate(
+                        tx.reference or "Order", 100
+                    ),
+                    "numberOfItems": 1,
+                    "price": amount,
+                }],
             },
             "urls": {
-                "successUrl": (
-                    f"{base_url}/payment/raiffeisen/return"
-                    f"?ref={tx.reference}"
-                ),
-                "failUrl": (
-                    f"{base_url}/payment/raiffeisen/return"
-                    f"?ref={tx.reference}"
-                ),
-                "cancelUrl": (
-                    f"{base_url}/payment/raiffeisen/return"
-                    f"?ref={tx.reference}"
-                ),
+                "successUrl": tx._raiffeisen_return_url(base_url),
+                "failUrl": tx._raiffeisen_return_url(base_url),
+                "cancelUrl": tx._raiffeisen_return_url(base_url),
                 "notificationUrl": (
                     f"{base_url}/payment/raiffeisen/webhook"
                 ),
@@ -542,19 +589,60 @@ class PaymentProvider(models.Model):
             "paymentMethodPreference": "CARD",
         }
 
+    # ── Order / transaction queries ──────────────────────────────────
+
     def _raiffeisen_get_order_status(self, order_id):
-        """Query the order status from the gateway."""
+        """Query the order from the gateway.
+
+        Returns the order object, whose `status` is one of DRAFT,
+        CHECKOUT, PAID, PARTIALLY_REFUNDED, FULLY_REFUNDED, FAILED,
+        CANCELED, ABANDONED. Note that this payload contains the order
+        and its invoice only — it carries no list of transactions.
+        """
         self.ensure_one()
         return self._raiffeisen_api_request("GET", f"/orders/{order_id}")
 
-    def _raiffeisen_refund(self, order_id, transaction_id, amount_cents,
+    def _raiffeisen_get_transaction(self, order_id, transaction_id):
+        """Query a single transaction of an order."""
+        self.ensure_one()
+        return self._raiffeisen_api_request(
+            "GET", f"/orders/{order_id}/transactions/{transaction_id}"
+        )
+
+    def _raiffeisen_list_transactions(self, order_id):
+        """Return the order's transactions as a list of dicts.
+
+        The docs label this endpoint "Retrieve all transactions" but
+        document it as a POST whose example response is a single
+        transaction object rather than an array. Until that is settled
+        against the live API, try GET first, fall back to POST when the
+        method is refused, and accept every plausible response shape.
+        """
+        self.ensure_one()
+        endpoint = f"/orders/{order_id}/transactions"
+        try:
+            data = self._raiffeisen_api_request("GET", endpoint)
+        except ValidationError:
+            data = self._raiffeisen_api_request("POST", endpoint, {})
+        return self._raiffeisen_normalize_transaction_list(data)
+
+    @staticmethod
+    def _raiffeisen_normalize_transaction_list(data):
+        """Coerce a transactions response into a list of dicts."""
+        return normalize_transaction_list(data)
+
+    def _raiffeisen_refund(self, order_id, transaction_id, amount,
                            currency):
-        """Issue a refund via the API."""
+        """Issue a refund via the API.
+
+        The response carries only `transactionId`; the refund's own
+        status has to be read back from the transaction endpoint.
+        """
         self.ensure_one()
         return self._raiffeisen_api_request(
             "POST",
             f"/orders/{order_id}/transactions/{transaction_id}/refund",
-            {"amount": amount_cents, "currency": currency},
+            {"amount": amount, "currency": currency},
         )
 
     # ── Odoo payment provider interface ──────────────────────────────
@@ -571,35 +659,3 @@ class PaymentProvider(models.Model):
             return super()._get_default_payment_method_codes()
         return ["card"]
 
-
-# ── Module-level transliteration utility ─────────────────────────────
-
-_CYR_MAP = {
-    "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D",
-    "Ђ": "Dj", "Е": "E", "Ж": "Z", "З": "Z", "И": "I",
-    "Ј": "J", "К": "K", "Л": "L", "Љ": "Lj", "М": "M",
-    "Н": "N", "Њ": "Nj", "О": "O", "П": "P", "Р": "R",
-    "С": "S", "Т": "T", "Ћ": "C", "У": "U", "Ф": "F",
-    "Х": "H", "Ц": "C", "Ч": "C", "Џ": "Dz", "Ш": "S",
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d",
-    "ђ": "dj", "е": "e", "ж": "z", "з": "z", "и": "i",
-    "ј": "j", "к": "k", "л": "l", "љ": "lj", "м": "m",
-    "н": "n", "њ": "nj", "о": "o", "п": "p", "р": "r",
-    "с": "s", "т": "t", "ћ": "c", "у": "u", "ф": "f",
-    "х": "h", "ц": "c", "ч": "c", "џ": "dz", "ш": "s",
-}
-
-
-def _transliterate(text, max_len=127):
-    """Transliterate non-Latin characters and limit length."""
-    if not text:
-        return ""
-    result = []
-    for char in text:
-        if char in _CYR_MAP:
-            result.append(_CYR_MAP[char])
-        else:
-            nfkd = unicodedata.normalize("NFKD", char)
-            ascii_char = nfkd.encode("ascii", "ignore").decode("ascii")
-            result.append(ascii_char if ascii_char else "")
-    return "".join(result)[:max_len]

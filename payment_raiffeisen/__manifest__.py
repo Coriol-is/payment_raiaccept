@@ -1,12 +1,12 @@
 {
     "name": "Payment Provider: Raiffeisen RaiAccept",
-    "version": "19.0.1.6.1",
+    "version": "19.0.2.0.0",
     "category": "Accounting/Payment Providers",
     "sequence": 370,
     "summary": "Accept online card payments via Raiffeisen Bank RaiAccept gateway (Serbia & SEE).",
     "description": " ",  # Non-empty to avoid loading README as description.
-    "author": "Adria Mart",
-    "website": "https://adriamart.rs",
+    "author": "Coriolis Lab, Adria Mart",
+    "website": "https://coriol.co",
     "license": "LGPL-3",
     "price": 0,
     "currency": "EUR",

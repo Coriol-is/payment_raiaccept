@@ -1,0 +1,106 @@
+name: tests
+
+on:
+  push:
+    branches: ["main", "19.0", "fix/**"]
+  pull_request:
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Byte-compile every Python file
+        run: python -m compileall -q payment_raiffeisen
+      - name: Parse every XML data file
+        run: |
+          python - <<'PY'
+          import pathlib, xml.etree.ElementTree as ET
+          files = sorted(pathlib.Path("payment_raiffeisen").rglob("*.xml"))
+          assert files, "no XML data files found"
+          for path in files:
+              ET.parse(path)
+              print("ok", path)
+          PY
+      - name: Manifest data files must exist
+        run: |
+          python - <<'PY'
+          import ast, pathlib
+          root = pathlib.Path("payment_raiffeisen")
+          manifest = ast.literal_eval((root / "__manifest__.py").read_text())
+          missing = [f for f in manifest["data"] if not (root / f).is_file()]
+          assert not missing, f"declared but absent: {missing}"
+          print("all", len(manifest["data"]), "data files present")
+          PY
+
+  protocol-tests:
+    name: RaiAccept protocol tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      # These need no database: raiaccept.py imports nothing from Odoo,
+      # and every assertion is pinned to docs.raiaccept.com.
+      - run: pytest -q tests
+
+  odoo-tests:
+    name: Odoo 19 integration tests
+    runs-on: ubuntu-latest
+    container:
+      image: odoo:19
+      options: --user root
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U odoo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run module tests
+        # The odoo image's default shell is dash, which has no pipefail.
+        shell: bash
+        run: |
+          set -o pipefail
+          ln -s "$GITHUB_WORKSPACE/payment_raiffeisen" \
+                /mnt/extra-addons/payment_raiffeisen
+          # --log-level=test is required: at warn level Odoo prints no
+          # test results at all, so a green run is indistinguishable
+          # from tests that never executed.
+          odoo --db_host=postgres --db_user=odoo --db_password=odoo \
+               -d raiffeisen_ci -i payment_raiffeisen \
+               --test-tags /payment_raiffeisen \
+               --stop-after-init --log-level=test 2>&1 | tee odoo.log
+      - name: Assert the suite actually ran and passed
+        shell: bash
+        run: |
+          # The odoo image ships python3 only — there is no `python`.
+          python3 - <<'PY'
+          import re, sys
+          log = open("odoo.log", encoding="utf-8", errors="replace").read()
+          match = re.search(
+              r"odoo\.tests\.result: (\d+) failed, (\d+) error\(s\) of (\d+) tests",
+              log,
+          )
+          if not match:
+              sys.exit("no odoo.tests.result line — the tests did not run")
+          failed, errored, total = (int(g) for g in match.groups())
+          print(f"{total} tests, {failed} failed, {errored} errors")
+          if total == 0:
+              sys.exit("the suite reported zero tests")
+          if failed or errored:
+              sys.exit("test failures")
+          PY

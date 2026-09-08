@@ -20,20 +20,19 @@ class RaiffeisenController(http.Controller):
         save_session=False,
     )
     def raiffeisen_return(self, **data):
-        """Handle customer return from RaiAccept payment page.
+        """Handle customer return from the RaiAccept payment page.
 
         After payment, the gateway redirects the customer back here
-        via successUrl / failUrl / cancelUrl.
+        via successUrl / failUrl / cancelUrl. The redirect itself says
+        nothing trustworthy about the outcome — `_apply_updates` reads
+        the order back from the API.
         """
         _logger.info(
             "Raiffeisen return with ref=%s", data.get("ref", "N/A")
         )
-
-        # Use Odoo 19's standard _process flow
         request.env["payment.transaction"].sudo()._process(
             "raiffeisen", data
         )
-
         return request.redirect("/payment/status")
 
     @http.route(
@@ -47,71 +46,37 @@ class RaiffeisenController(http.Controller):
     def raiffeisen_webhook(self, **data):
         """Handle asynchronous webhook notifications from RaiAccept.
 
-        Defense-in-depth (added 19.0.1.6.0 — Codex review on PR #76,
-        revised after Codex P1 on PR #78):
+        RaiAccept sends an unsigned JSON body — the documented
+        notification carries no signature, MAC or shared secret. So the
+        webhook is treated as a hint that something changed, never as
+        evidence of what changed: `_apply_updates` re-fetches the order
+        from the API and believes only that.
 
-          1. Source IP allowlist — reject HTTP 403 when remote_addr
-             is not in the merchant's `raiffeisen_webhook_allowed_ips`
-             config. Bypassed when the field is empty (log-only mode
-             so a misconfigured allowlist can't accidentally lock the
-             merchant out of receiving webhooks during onboarding).
+        On top of that, a merchant who has confirmed the gateway's
+        egress addresses with their bank can set an IP allowlist, which
+        is enforced here. It defaults to empty, in which case the source
+        IP is only logged — a misconfigured allowlist during onboarding
+        would otherwise silently drop every notification.
 
-             remote_addr is taken straight from
-             `request.httprequest.remote_addr`. We do NOT trust the
-             X-Forwarded-For header in this controller because that
-             header is client-controlled and a forged
-             "X-Forwarded-For: 195.85.198.15" would otherwise bypass
-             the allowlist. Operators behind a reverse proxy MUST
-             enable Odoo's proxy_mode (odoo.conf `proxy_mode = True`),
-             which makes werkzeug rewrite remote_addr from the
-             trusted-hop XFF chain. Without proxy_mode, remote_addr
-             is the proxy IP — admin should allowlist that proxy IP.
-
-          2. Signature verification — invoked when
-             `raiffeisen_webhook_signature_mode` is `warn` or
-             `enforce`. The verifier itself is a stub today (the JSON
-             canonicalization scheme needs to be confirmed against
-             real prod payloads); see
-             `_raiffeisen_verify_webhook_signature` docstring for the
-             roadmap. In `enforce` mode the controller rejects unless
-             the verifier returns True (so a stub returning None is
-             treated as "verification failed" — by design, an admin
-             enabling enforce while the verifier is unimplemented
-             gets a hard-fail rather than silent acceptance). In
-             `warn` mode mismatches and unverified payloads are
-             logged but the request still processes.
-
-          3. Authoritative re-fetch — `_apply_updates` queries the
-             gateway directly for amount + currency, so even an
-             unsigned (or replayed) webhook cannot mark an order paid
-             unless the gateway itself confirms the transaction. This
-             is the primary protection today and stays in place
-             regardless of the IP / signature checks above.
-
-        The two new checks are deliberately additive and conservative
-        by default — out of the box the controller behaves exactly as
-        in 19.0.1.5.0 (no rejections, just structured audit logs)
-        until the merchant configures the allowlist / cert.
+        remote_addr comes straight from werkzeug. X-Forwarded-For is
+        deliberately not read here: it is client-controlled, and a
+        forged header would defeat the allowlist. Behind a reverse
+        proxy, enable Odoo's `proxy_mode` so werkzeug rewrites
+        remote_addr from the trusted hop.
         """
-        # ----- Source IP audit -----
-        # NOTE: deliberately NOT reading X-Forwarded-For here — that
-        # header is client-controlled and trusting its first hop would
-        # let an attacker bypass the IP allowlist by forging it. Odoo
-        # already rewrites remote_addr from XFF when proxy_mode is on
-        # (recommended for any reverse-proxy deployment); when it's
-        # off, remote_addr is the direct connection IP.
         remote_ip = request.httprequest.remote_addr or "?"
 
-        # ----- Provider lookup (for security config) -----
-        # We can't call _process before knowing the provider, but the
-        # provider record is needed for IP / signature checks. Use the
-        # first enabled raiffeisen provider; if multi-provider setups
-        # become a real scenario, the gateway notify URL itself can be
-        # made provider-specific (per /payment/raiffeisen/<id>/webhook).
-        provider = request.env["payment.provider"].sudo().search(
-            [("code", "=", "raiffeisen")],
-            order="state desc, id asc",
-            limit=1,
+        # The provider record is needed for the IP check before any
+        # transaction is resolved. Prefer an enabled provider over a
+        # test one; a disabled provider is used only as a last resort so
+        # that the request is still logged against something.
+        providers = request.env["payment.provider"].sudo().search(
+            [("code", "=", "raiffeisen")], order="id asc",
+        )
+        provider = (
+            providers.filtered(lambda p: p.state == "enabled")[:1]
+            or providers.filtered(lambda p: p.state == "test")[:1]
+            or providers[:1]
         )
         if not provider:
             _logger.warning(
@@ -122,7 +87,6 @@ class RaiffeisenController(http.Controller):
                 {"error": "provider not configured"}, status=503,
             )
 
-        # ----- IP allowlist enforcement -----
         ip_ok, ip_reason = provider._raiffeisen_webhook_ip_allowed(remote_ip)
         if not ip_ok:
             _logger.warning(
@@ -133,7 +97,6 @@ class RaiffeisenController(http.Controller):
                 {"error": "source ip not allowed"}, status=403,
             )
 
-        # ----- Parse JSON body -----
         try:
             payload = json.loads(request.httprequest.data or b"{}")
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
@@ -154,86 +117,37 @@ class RaiffeisenController(http.Controller):
                 {"error": "expected JSON object"}, status=400
             )
 
-        # Validate nested structures are dicts
-        order_data = payload.get("order", {})
-        tx_data = payload.get("transaction", {})
-        if not isinstance(order_data, dict) or not isinstance(tx_data, dict):
+        payment_data = request.env["payment.transaction"].sudo() \
+            ._raiffeisen_normalize_webhook(payload)
+
+        if not payment_data.get("orderIdentification") \
+                and not payment_data.get("transactionId") \
+                and not payment_data.get("merchantOrderReference"):
             _logger.warning(
-                "Raiffeisen webhook: order/transaction not dicts "
-                "(remote_ip=%s)", remote_ip,
+                "Raiffeisen webhook: payload identifies no order, "
+                "transaction or merchant reference (remote_ip=%s)",
+                remote_ip,
             )
             return request.make_json_response(
                 {"error": "malformed payload structure"}, status=400
             )
 
-        # ----- Signature verification (mode-driven) -----
-        # Codex (PR #78) flagged that returning None from the stub
-        # verifier silently accepted requests in `enforce` mode even
-        # though the field help advertises enforce as rejecting
-        # invalid/missing signatures. Fixed: enforce now requires
-        # sig_ok is True; everything else (False AND None) is
-        # rejected. Admin enabling enforce while the verifier is
-        # still a stub will hard-fail webhooks — exactly what they
-        # asked for, and a strong signal to wait until the real
-        # verifier ships before flipping the switch.
-        sig = (
-            payload.get("signature")
-            or payload.get("Signature")
-            or tx_data.get("signature")
-            or ""
-        )
-        sig_ok, sig_reason = provider._raiffeisen_verify_webhook_signature(
-            payload, sig,
-        )
-        mode = provider.raiffeisen_webhook_signature_mode
-        if mode == "enforce" and sig_ok is not True:
-            _logger.warning(
-                "Raiffeisen webhook REJECTED: signature %s "
-                "(remote_ip=%s, order=%s, mode=enforce)",
-                sig_reason, remote_ip,
-                order_data.get("orderIdentification", "?"),
-            )
-            return request.make_json_response(
-                {"error": "invalid or unverified signature"}, status=403,
-            )
-        if mode == "warn" and sig_ok is False:
-            _logger.warning(
-                "Raiffeisen webhook signature mismatch (warn-only): %s "
-                "(remote_ip=%s, order=%s)",
-                sig_reason, remote_ip,
-                order_data.get("orderIdentification", "?"),
-            )
-        # sig_ok is None when the verifier is the stub or the mode is
-        # "off"; in `off`/`warn` we still log it so prod operators can
-        # audit the gap.
-
         # Log only non-PII identifiers — no customer data
         _logger.info(
-            "Raiffeisen webhook ACCEPTED: order=%s status=%s txType=%s "
-            "remote_ip=%s ip_check=%s sig_check=%s",
-            order_data.get("orderIdentification", "?"),
-            order_data.get("status", "?"),
-            tx_data.get("transactionType", "?"),
+            "Raiffeisen webhook ACCEPTED: order=%s tx=%s type=%s status=%s "
+            "code=%s remote_ip=%s ip_check=%s",
+            payment_data.get("orderIdentification", "?"),
+            payment_data.get("transactionId", "?"),
+            payment_data.get("transactionType", "?"),
+            payment_data.get("transactionStatus", "?"),
+            payment_data.get("statusCode", "?"),
             remote_ip,
             ip_reason,
-            sig_reason,
         )
-
-        notification_data = {
-            "orderIdentification": order_data.get(
-                "orderIdentification"
-            ),
-            "merchantOrderReference": order_data.get(
-                "merchantOrderReference"
-            ),
-            "status": order_data.get("status", ""),
-            "transactionId": tx_data.get("transactionId"),
-            "transactionType": tx_data.get("transactionType"),
-        }
 
         try:
             request.env["payment.transaction"].sudo()._process(
-                "raiffeisen", notification_data
+                "raiffeisen", payment_data
             )
         except Exception:
             _logger.exception("Raiffeisen webhook processing failed")

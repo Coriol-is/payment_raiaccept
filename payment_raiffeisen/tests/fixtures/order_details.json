@@ -1,0 +1,53 @@
+{
+    "orderIdentification": "D-001-ORD-d94e7447-494e-43ad-a460-5cd94b3fb0d8",
+    "paymentMethodPreference": "CARD",
+    "merchant": {
+        "merchantAccountId": "D-001-MA-vGWWZLm4",
+        "statementDescriptorShortVersion": "yourShopName"
+    },
+    "createdOn": "2022-09-14T20:27:27Z",
+    "consumer": {
+        "firstName": "Milica",
+        "lastName": "Petrovic",
+        "email": "milica@petrovic.rs",
+        "mobilePhone": "+381113202100",
+        "phone": "",
+        "workPhone": "",
+        "ipAddress": ""
+    },
+    "invoice": {
+        "merchantOrderReference": "1551764626669",
+        "amount": 4000.00,
+        "currency": "RSD",
+        "description": "Test Order",
+        "items": [
+            {"numberOfItems": 1, "price": 4000.00, "description": "ItemA"}
+        ]
+    },
+    "shippingAddress": {
+        "firstName": "Milica",
+        "lastName": "Petrovic",
+        "addressStreet1": "Resavska 1",
+        "postalCode": "11000",
+        "city": "Beograd",
+        "state": "",
+        "country": "SRB"
+    },
+    "billingAddress": {
+        "firstName": "Milica",
+        "lastName": "Petrovic",
+        "addressStreet1": "Resavska 1",
+        "postalCode": "11000",
+        "city": "Beograd",
+        "state": "",
+        "country": "SRB"
+    },
+    "callbackUrls": {
+        "successUrl": "https://yourshopname.rs/success/",
+        "failUrl": "https://yourshopname.rs/error/",
+        "cancelUrl": "https://yourshopname.rs/cancel/",
+        "notificationUrl": "https://webhook.site/cb7f55c6"
+    },
+    "isProduction": false,
+    "status": "PAID"
+}

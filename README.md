@@ -6,6 +6,14 @@
 
 Open-source Odoo 19 payment provider module for **Raiffeisen Bank RaiAccept** gateway. Accepts Visa, Mastercard, and DinaCard payments through Raiffeisen's hosted checkout in Serbia and the wider SEE/CEE region.
 
+> **This is a maintained fork.** The original module was built by
+> [Adria Mart](https://adriamart.rs) ([AdriaMartHQ/payment_raiffeisen](https://github.com/AdriaMartHQ/payment_raiffeisen)).
+> This fork is maintained by **[Coriolis Lab](https://coriol.co/)**: the client has been
+> realigned with the published RaiAccept API (authentication with `integrationContext`,
+> decimal amounts, webhook payload shapes, refund flow) and validated end-to-end against
+> the live RaiAccept Sandbox — login/refresh, order, hosted checkout, test-card payment,
+> status queries, and partial refunds (2026-09-08).
+
 ## Install
 
 - **Odoo Apps Store** (recommended): [apps.odoo.com/apps/modules/19.0/payment_raiffeisen](https://apps.odoo.com/apps/modules/19.0/payment_raiffeisen)
@@ -49,8 +57,15 @@ LGPL-3 — see [`payment_raiffeisen/LICENSE`](payment_raiffeisen/LICENSE).
 
 ## Maintainer
 
-Built and maintained by **Adria Mart** (sole proprietorship, Belgrade, Serbia) — [adriamart.rs](https://adriamart.rs) — during our pre-launch technical preparation. Pull requests and issues welcome.
+This fork is maintained by **Coriolis Lab** — [coriol.co](https://coriol.co/) — publisher of
+Odoo apps for the Serbian market. Pull requests and issues welcome.
+
+- GitHub Issues: [Coriol-is/payment_raiffeisen/issues](https://github.com/Coriol-is/payment_raiffeisen/issues)
+
+### Original module
+
+Originally built by **Adria Mart** (sole proprietorship, Belgrade, Serbia) — [adriamart.rs](https://adriamart.rs) — during their pre-launch technical preparation.
 
 - Blog: [Open-Source Odoo 19 Payment Provider: Raiffeisen RaiAccept](https://adriamart.rs/blog/resources-3/8)
 - Email: balkan@adriamart.rs
-- GitHub Issues: [issues](https://github.com/AdriaMartHQ/payment_raiffeisen/issues)
+- Upstream: [AdriaMartHQ/payment_raiffeisen](https://github.com/AdriaMartHQ/payment_raiffeisen)

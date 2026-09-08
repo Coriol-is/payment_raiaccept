@@ -1,0 +1,33 @@
+{
+"transaction": {
+    "transactionId": "D-001-TX-ffa6c2b4-b1d7-431d-8452-ebf858b2b175",
+    "transactionAmount": 2000.00,
+    "transactionCurrency": "RSD",
+    "isProduction": false,
+    "transactionType": "REFUND",
+    "paymentMethod": "CARD",
+    "status": "SUCCESS",
+    "statusCode": "0000",
+    "statusMessage": "Success",
+    "createdOn": "2023-01-05T10:00:18Z",
+    "updatedOn": "2023-01-05T10:00:19Z"
+},
+"merchant": {
+    "merchantAccountId": "D-001-MA-HfDqSZwd",
+    "statementDescriptorShortVersion": "agrolivana"
+},
+"order": {
+    "orderIdentification": "D-001-ORD-edf3e8b2-8b0e-404a-b55a-e6b3c2dd7780",
+    "invoice": {
+        "merchantOrderReference": "12345678922",
+        "description": "Test Order"
+    }
+},
+"card": {
+    "maskedCardNumber": "512070******0019",
+    "cardHolderName": "Milica Petrovic",
+    "type": "MASTERCARD",
+    "issuerCountry": "UKR",
+    "cardToken": "0e46b504-c5c4-4072-a624-0aec4d8a39b7"
+    }
+}
