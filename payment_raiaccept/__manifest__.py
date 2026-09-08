@@ -10,7 +10,12 @@
     "license": "LGPL-3",
     "price": 0,
     "currency": "EUR",
-    "images": ["static/description/banner.png"],
+    # First entry is the store cover: the Apps grid renders it in a
+    # strict 2:1 box with background-size: cover.
+    "images": [
+        "static/description/cover.png",
+        "static/description/banner.png",
+    ],
     "depends": [
         "payment",
     ],
