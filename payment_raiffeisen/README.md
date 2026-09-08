@@ -185,12 +185,11 @@ LGPL-3 (GNU Lesser General Public License v3.0) — free and open source.
 
 ## Maintainer
 
-Maintained by **Adria Mart** (sole proprietorship / preduzetnik), Belgrade, Serbia
-- Matični broj: 68230454
-- Web: https://adriamart.rs
-- Email: balkan@adriamart.com
+Maintained by **Coriolis Lab** — https://coriol.co/ — publisher of Odoo apps for the
+Serbian market. This is a maintained fork of the original open-source module by
+Adria Mart (https://adriamart.rs).
 
 ## Support
 
-- GitHub Issues: https://github.com/AdriaMartHQ/payment_raiffeisen/issues
-- Email: balkan@adriamart.com
+- GitHub Issues: https://github.com/Coriol-is/payment_raiffeisen/issues
+- Email: odoo@coriol.co
