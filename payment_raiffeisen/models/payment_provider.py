@@ -5,7 +5,7 @@ from urllib.parse import urljoin
 import requests
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 
 from ..raiaccept import (
     API_BASE,
@@ -202,9 +202,19 @@ class PaymentProvider(models.Model):
         brands = self.env["payment.method"].with_context(
             active_test=False
         ).search([("code", "in", ("visa", "mastercard"))])
-        brands.filtered(lambda m: not m.active).write({"active": True})
+        # Link first: activating a payment.method passes core's check only
+        # when an enabled/test provider already supports it.
         for provider in self:
             provider.payment_method_ids = [(4, m.id) for m in brands]
+        try:
+            brands.filtered(lambda m: not m.active).write({"active": True})
+        except UserError:
+            # Purely cosmetic (brand icons at checkout) — never block
+            # enabling the provider over it.
+            _logger.warning(
+                "Raiffeisen: could not activate the card brand methods; "
+                "enable Visa/Mastercard manually under Payment Methods."
+            )
 
     # ── Feature support ──────────────────────────────────────────────
 
