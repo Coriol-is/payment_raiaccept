@@ -22,9 +22,13 @@
         all. A merchant whose account has them activates the method
         (Payment Providers -> Configuration -> Enable Payment Methods);
         selecting it at checkout opens the hosted page directly in that
-        wallet via paymentMethodPreference. The icons are neutral
-        placeholders - replace with the official marks (per Apple's and
-        Google's brand guidelines) before promoting them prominently.
+        wallet via paymentMethodPreference. The icons are the official
+        payment/acceptance marks (Wikimedia Commons mirrors of the
+        artwork Apple and Google distribute): the Apple Pay mark keeps
+        its white badge with black border, the Google Pay mark its
+        white pill with gray outline - per each brand's guidelines the
+        marks are scaled proportionally and never recolored, restyled,
+        or cropped.
     -->
     <record id="payment_method_apple_pay" model="payment.method">
         <field name="name">Apple Pay</field>
