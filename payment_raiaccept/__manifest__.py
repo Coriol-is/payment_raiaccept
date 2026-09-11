@@ -6,7 +6,8 @@
     "summary": "Accept online card payments via Raiffeisen Bank RaiAccept gateway (Serbia & SEE).",
     "description": " ",  # Non-empty to avoid loading README as description.
     "author": "Coriolis Lab, Adria Mart",
-    "website": "https://coriol.co",
+    "website": "https://coriol.co/odoo/",
+    "support": "odoo@coriol.co",
     "license": "LGPL-3",
     "price": 0,
     "currency": "EUR",
