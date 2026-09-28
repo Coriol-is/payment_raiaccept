@@ -30,7 +30,9 @@ Open-source Odoo 19 payment provider module for **Raiffeisen Bank RaiAccept** ga
 - Partial and full refunds from the Odoo backend
 - Production + sandbox credentials separated
 - Serbian Cyrillic-to-Latin transliteration for addresses
-- Webhook processing with authoritative gateway-side amount / currency verification
+- Webhook processing with authoritative gateway-side amount / currency verification,
+  plus an optional source-IP allowlist (RaiAccept sends from `18.96.33.128/29`; see
+  [module README](payment_raiaccept/README.md#webhook-source-ips-optional))
 - Billing address mapping for 50+ countries
 
 Supported markets: Serbia, Austria, Croatia, Bosnia & Herzegovina, Kosovo, Albania, Romania, Hungary, Czech Republic, Slovakia, Ukraine (all Raiffeisen business accounts).
