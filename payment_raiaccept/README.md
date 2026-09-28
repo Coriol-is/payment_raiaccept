@@ -68,6 +68,26 @@ Official RaiAccept API reference, test card numbers, and integration guides:
 4. Set **Gateway Currency** (RSD or EUR) and **Currency Rate** if your store currency differs
 5. Enable the provider
 
+### Webhook source IPs (optional)
+
+RaiAccept sends webhook notifications from **`18.96.33.128/29`** (confirmed by
+Raiffeisen banka a.d. Beograd, 2026-09-25; see the
+[notification webhook docs](https://docs.raiaccept.com/code-integration.html#notification-webhook)).
+The notification carries no signature, so the module never trusts its body — it
+re-reads the order from the API. The allowlist is an extra filter on top of that.
+
+The **Webhook Allowed Source IPs** field matches exact addresses only, not CIDR
+ranges. To enforce the allowlist, enter all eight addresses of the range:
+
+```
+18.96.33.128, 18.96.33.129, 18.96.33.130, 18.96.33.131, 18.96.33.132, 18.96.33.133, 18.96.33.134, 18.96.33.135
+```
+
+Entering `18.96.33.128/29` as-is would reject every notification. Behind a
+reverse proxy, set `proxy_mode = True` in `odoo.conf`, otherwise Odoo sees the
+proxy's address instead of RaiAccept's. Leaving the field empty keeps log-only
+mode: the source IP is logged, nothing is rejected.
+
 ## Technical Details
 
 - Uses AWS Cognito `USER_PASSWORD_AUTH` for API authentication

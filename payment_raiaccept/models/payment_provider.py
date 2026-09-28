@@ -133,8 +133,9 @@ class PaymentProvider(models.Model):
              "see the proxy IP, so allowlist that proxy IP instead. "
              "X-Forwarded-For is intentionally NOT trusted directly "
              "by this controller — that header is client-controlled.\n\n"
-             "Confirm the actual RaiAccept egress IPs with your bank "
-             "contact before enforcing this in production.",
+             "RaiAccept sends webhooks from 18.96.33.128/29 (confirmed "
+             "by Raiffeisen, 2026-09). Exact addresses only, no CIDR: "
+             "enter 18.96.33.128 through 18.96.33.135, all eight.",
     )
 
     # ── State-aware credential validation ────────────────────────────
