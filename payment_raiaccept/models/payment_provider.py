@@ -140,25 +140,24 @@ class PaymentProvider(models.Model):
 
     # ── State-aware credential validation ────────────────────────────
 
-    @api.constrains("state", "code",
+    @api.constrains("is_live", "active", "code",
                     "raiffeisen_api_username", "raiffeisen_api_password",
                     "raiffeisen_sandbox_username", "raiffeisen_sandbox_password")
     def _check_raiffeisen_credentials(self):
-        for provider in self.filtered(lambda p: p.code == "raiffeisen"):
-            if provider.state == "enabled":
-                if not provider.raiffeisen_api_username \
-                        or not provider.raiffeisen_api_password:
-                    raise ValidationError(
-                        _("Production API credentials are required when "
-                          "the Raiffeisen provider is enabled.")
-                    )
-            elif provider.state == "test":
-                if not provider.raiffeisen_sandbox_username \
-                        or not provider.raiffeisen_sandbox_password:
-                    raise ValidationError(
-                        _("Sandbox credentials are required when "
-                          "the Raiffeisen provider is in test mode.")
-                    )
+        # Odoo 20 has no provider `state`. A freshly installed provider is
+        # active, not live and unconfigured, and core only enforces
+        # credentials for live providers (`_check_required_if_provider`).
+        # Test mode follows the same rule: missing sandbox credentials are
+        # reported by `_raiffeisen_login` before any call is made.
+        for provider in self.filtered(
+            lambda p: p.code == "raiffeisen" and p.active and p.is_live
+        ):
+            if not provider.raiffeisen_api_username \
+                    or not provider.raiffeisen_api_password:
+                raise ValidationError(
+                    _("Production API credentials are required when "
+                      "the Raiffeisen provider is live.")
+                )
 
     @api.constrains("raiffeisen_currency_rate")
     def _check_raiffeisen_currency_rate(self):
@@ -177,55 +176,13 @@ class PaymentProvider(models.Model):
         environment and produce a 401 on the customer's checkout.
         """
         invalidating = {
-            "state",
+            "is_live",
             "raiffeisen_api_username", "raiffeisen_api_password",
             "raiffeisen_sandbox_username", "raiffeisen_sandbox_password",
         }
         if invalidating & set(vals) and not _TOKEN_FIELDS & set(vals):
             vals = dict(vals, **{f: False for f in _TOKEN_FIELDS})
-        res = super().write(vals)
-        if vals.get("state") in ("enabled", "test"):
-            self.filtered(
-                lambda p: p.code == "raiffeisen"
-            )._raiffeisen_activate_brand_methods()
-        return res
-
-    def _raiffeisen_activate_brand_methods(self):
-        """Unarchive the card brands so their icons render at checkout.
-
-        Core ships the visa/mastercard payment.method records archived,
-        and archived records silently drop out of the provider's m2m —
-        the checkout then shows only the DinaCard icon. They cannot be
-        activated at install time either: payment.method.write refuses
-        to activate a brand while every provider supporting it is
-        disabled. So they are activated here, the moment the provider
-        itself is enabled or put in test mode.
-        """
-        brands = self.env["payment.method"].with_context(
-            active_test=False
-        ).search([("code", "in", ("visa", "mastercard"))])
-        # The archived wallet methods are linked too (but not activated:
-        # wallets exist only on merchant accounts where the bank enabled
-        # them). Without the link, core's write guard would refuse the
-        # merchant's own manual activation.
-        wallets = self.env["payment.method"].with_context(
-            active_test=False
-        ).search([("code", "in", ("apple_pay", "google_pay"))])
-        # Link first: activating a payment.method passes core's check only
-        # when an enabled/test provider already supports it.
-        for provider in self:
-            provider.payment_method_ids = [
-                (4, m.id) for m in (brands | wallets)
-            ]
-        try:
-            brands.filtered(lambda m: not m.active).write({"active": True})
-        except UserError:
-            # Purely cosmetic (brand icons at checkout) — never block
-            # enabling the provider over it.
-            _logger.warning(
-                "Raiffeisen: could not activate the card brand methods; "
-                "enable Visa/Mastercard manually under Payment Methods."
-            )
+        return super().write(vals)
 
     # ── Feature support ──────────────────────────────────────────────
 
@@ -269,9 +226,9 @@ class PaymentProvider(models.Model):
     # ── Credential helpers ───────────────────────────────────────────
 
     def _raiffeisen_get_credentials(self):
-        """Return (username, password) based on provider state."""
+        """Return (username, password) for the live or the test gateway."""
         self.ensure_one()
-        if self.state == "test":
+        if not self.is_live:
             return (
                 self.raiffeisen_sandbox_username or "",
                 self.raiffeisen_sandbox_password or "",

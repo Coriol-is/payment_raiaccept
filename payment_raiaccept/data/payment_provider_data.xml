@@ -1,53 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
 
-    <!--
-        DinaCard — Serbian national card scheme. Not shipped by Odoo core,
-        so we create it here as a brand (child of the generic Card method).
-    -->
-    <record id="payment_method_dinacard" model="payment.method">
-        <field name="name">DinaCard</field>
-        <field name="code">dinacard</field>
-        <field name="primary_payment_method_id" ref="payment.payment_method_card"/>
-        <field name="image"
-               type="base64"
-               file="payment_raiaccept/static/src/img/dinacard.png"/>
-    </record>
-
-    <!--
-        Wallet methods. Odoo 19 core ships no apple_pay/google_pay
-        payment.method records, so they are created here — archived,
-        because RaiAccept shows a wallet only when the bank has enabled
-        it on the merchant account, and the Sandbox has no wallets at
-        all. A merchant whose account has them activates the method
-        (Payment Providers -> Configuration -> Enable Payment Methods);
-        selecting it at checkout opens the hosted page directly in that
-        wallet via paymentMethodPreference. The icons are the official
-        payment/acceptance marks (Wikimedia Commons mirrors of the
-        artwork Apple and Google distribute): the Apple Pay mark keeps
-        its white badge with black border, the Google Pay mark its
-        white pill with gray outline - per each brand's guidelines the
-        marks are scaled proportionally and never recolored, restyled,
-        or cropped.
-    -->
-    <record id="payment_method_apple_pay" model="payment.method">
-        <field name="name">Apple Pay</field>
-        <field name="code">apple_pay</field>
-        <field name="active" eval="False"/>
-        <field name="image"
-               type="base64"
-               file="payment_raiaccept/static/src/img/apple_pay.png"/>
-    </record>
-
-    <record id="payment_method_google_pay" model="payment.method">
-        <field name="name">Google Pay</field>
-        <field name="code">google_pay</field>
-        <field name="active" eval="False"/>
-        <field name="image"
-               type="base64"
-               file="payment_raiaccept/static/src/img/google_pay.png"/>
-    </record>
-
     <record id="payment_provider_raiffeisen" model="payment.provider">
         <field name="name">Raiffeisen RaiAccept</field>
         <field name="code">raiffeisen</field>
@@ -55,23 +8,6 @@
                type="base64"
                file="payment_raiaccept/static/description/icon.png"/>
         <field name="redirect_form_view_id" ref="redirect_form"/>
-        <!--
-            Link the PRIMARY Card method (required for Odoo's
-            _get_compatible_payment_methods to surface the provider)
-            AND each accepted brand (required for the brand icons
-            to render in the "Secured by Raiffeisen RaiAccept" row
-            on the checkout page). Linking only the primary method
-            hides all brand icons; linking only the brands causes
-            Odoo to report "no supported provider available" on the
-            Card method. Both are required.
-        -->
-        <field name="payment_method_ids"
-               eval="[(6, 0, [
-                   ref('payment.payment_method_card'),
-                   ref('payment.payment_method_visa'),
-                   ref('payment.payment_method_mastercard'),
-                   ref('payment_raiaccept.payment_method_dinacard'),
-               ])]"/>
         <field name="module_id" ref="base.module_payment_raiaccept"/>
         <field name="available_country_ids"
                eval="[(6, 0, [
@@ -91,6 +27,92 @@
                    ref('base.fr'),
                    ref('base.uk'),
                ])]"/>
+    </record>
+
+    <!--
+        Odoo 20 payment methods belong to a provider (payment.method has a
+        required provider_id and a UNIQUE(provider_id, code) constraint);
+        core no longer ships shared Card/Visa/Mastercard records. The
+        primary Card method is the one checkout offers; the brands below
+        it only draw the icons in the "Secured by Raiffeisen RaiAccept"
+        row. Methods are created archived; on install core activates the
+        primary methods returned by _get_default_payment_method_codes
+        ("card") together with their brands.
+    -->
+    <record id="payment_method_card" model="payment.method">
+        <field name="name">Card</field>
+        <field name="code">card</field>
+        <field name="sequence">10</field>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="image" type="bytes" file="payment/static/img/card.png"/>
+        <field name="support_tokenization">False</field>
+        <field name="support_manual_capture">none</field>
+        <field name="support_refund">partial</field>
+    </record>
+
+    <record id="payment_method_visa" model="payment.method">
+        <field name="name">VISA</field>
+        <field name="code">visa</field>
+        <field name="sequence">50</field>
+        <field name="primary_payment_method_id" ref="payment_method_card"/>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="image" type="bytes" file="payment/static/img/visa.png"/>
+    </record>
+
+    <record id="payment_method_mastercard" model="payment.method">
+        <field name="name">MasterCard</field>
+        <field name="code">mastercard</field>
+        <field name="sequence">50</field>
+        <field name="primary_payment_method_id" ref="payment_method_card"/>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="image" type="bytes" file="payment/static/img/mastercard.png"/>
+    </record>
+
+    <!-- DinaCard: Serbian national card scheme, not shipped by Odoo core. -->
+    <record id="payment_method_dinacard" model="payment.method">
+        <field name="name">DinaCard</field>
+        <field name="code">dinacard</field>
+        <field name="sequence">50</field>
+        <field name="primary_payment_method_id" ref="payment_method_card"/>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="image"
+               type="bytes"
+               file="payment_raiaccept/static/src/img/dinacard.png"/>
+    </record>
+
+    <!--
+        Wallet methods, archived on purpose: RaiAccept shows a wallet only
+        when the bank has enabled it on the merchant account, and the
+        Sandbox has no wallets at all. A merchant whose account has them
+        activates the method (Payment Providers -> Payment Methods);
+        selecting it at checkout opens the hosted page directly in that
+        wallet via paymentMethodPreference. The icons are the official
+        payment/acceptance marks (Wikimedia Commons mirrors of the artwork
+        Apple and Google distribute): the Apple Pay mark keeps its white
+        badge with black border, the Google Pay mark its white pill with
+        gray outline - per each brand's guidelines the marks are scaled
+        proportionally and never recolored, restyled, or cropped.
+    -->
+    <record id="payment_method_apple_pay" model="payment.method">
+        <field name="name">Apple Pay</field>
+        <field name="code">apple_pay</field>
+        <field name="active" eval="False"/>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="support_refund">partial</field>
+        <field name="image"
+               type="bytes"
+               file="payment_raiaccept/static/src/img/apple_pay.png"/>
+    </record>
+
+    <record id="payment_method_google_pay" model="payment.method">
+        <field name="name">Google Pay</field>
+        <field name="code">google_pay</field>
+        <field name="active" eval="False"/>
+        <field name="provider_id" ref="payment_provider_raiffeisen"/>
+        <field name="support_refund">partial</field>
+        <field name="image"
+               type="bytes"
+               file="payment_raiaccept/static/src/img/google_pay.png"/>
     </record>
 
 </odoo>
