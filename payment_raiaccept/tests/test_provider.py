@@ -138,7 +138,7 @@ class TestRaiffeisenAuth(RaiffeisenCommon):
 
     def test_missing_credentials_are_reported_before_any_call(self):
         self.provider.write({
-            "state": "disabled",
+            "active": False,
             "raiffeisen_sandbox_username": False,
             "raiffeisen_sandbox_password": False,
             "raiffeisen_api_username": False,
@@ -161,7 +161,7 @@ class TestRaiffeisenAuth(RaiffeisenCommon):
         self.assertFalse(self.provider.raiffeisen_access_token)
         self.assertFalse(self.provider.raiffeisen_refresh_token)
 
-    def test_switching_state_drops_the_cached_tokens(self):
+    def test_switching_to_live_drops_the_cached_tokens(self):
         self.provider.write({
             "raiffeisen_api_username": "prod-user",
             "raiffeisen_api_password": "prod-pass",
@@ -169,7 +169,7 @@ class TestRaiffeisenAuth(RaiffeisenCommon):
             "raiffeisen_access_token_expiry":
                 fields.Datetime.now() + timedelta(minutes=4),
         })
-        self.provider.state = "enabled"
+        self.provider.is_live = True
         self.assertFalse(self.provider.raiffeisen_access_token)
 
 
@@ -266,10 +266,10 @@ class TestWebhookIpAllowlist(RaiffeisenCommon):
 @tagged("post_install", "-at_install")
 class TestProviderConfiguration(RaiffeisenCommon):
 
-    def test_enabled_requires_production_credentials(self):
+    def test_live_requires_production_credentials(self):
         with self.assertRaises(ValidationError):
             self.provider.write({
-                "state": "enabled",
+                "is_live": True,
                 "raiffeisen_api_username": False,
                 "raiffeisen_api_password": False,
             })

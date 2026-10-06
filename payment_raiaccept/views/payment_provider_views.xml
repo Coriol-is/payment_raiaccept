@@ -10,35 +10,32 @@
                 <group invisible="code != 'raiffeisen'"
                        name="raiffeisen_credentials"
                        string="Raiffeisen RaiAccept">
-                    <!-- Production credentials: shown only in enabled state -->
+                    <!-- Production credentials: shown only when live -->
                     <group string="Production Credentials"
-                           invisible="state != 'enabled'">
+                           invisible="not is_live">
                         <field name="raiffeisen_api_username"
                                string="Username"
-                               required="state == 'enabled'"
+                               required="is_live"
                                copy="False"/>
                         <field name="raiffeisen_api_password"
                                string="Password"
                                password="True"
-                               required="state == 'enabled'"
+                               required="is_live"
                                copy="False"/>
                     </group>
-                    <!-- Sandbox credentials: shown only in test state -->
+                    <!-- Sandbox credentials: shown only in test mode -->
                     <group string="Sandbox Credentials"
-                           invisible="state != 'test'">
+                           invisible="is_live">
                         <field name="raiffeisen_sandbox_username"
                                string="Sandbox Username"
-                               required="state == 'test'"
                                copy="False"/>
                         <field name="raiffeisen_sandbox_password"
                                string="Sandbox Password"
                                password="True"
-                               required="state == 'test'"
                                copy="False"/>
                     </group>
                     <!-- Currency settings: always visible -->
-                    <group string="Currency Settings"
-                           invisible="state == 'disabled'">
+                    <group string="Currency Settings">
                         <field name="raiffeisen_gateway_currency"/>
                         <field name="raiffeisen_currency_rate"/>
                     </group>

@@ -11,7 +11,7 @@ class RaiffeisenCommon(TransactionCase):
         cls.provider = cls.env["payment.provider"].create({
             "name": "Raiffeisen Test",
             "code": "raiffeisen",
-            "state": "test",
+            "is_live": False,
             "raiffeisen_sandbox_username": "sandbox-user",
             "raiffeisen_sandbox_password": "sandbox-pass",
             "raiffeisen_gateway_currency": "RSD",
@@ -29,7 +29,7 @@ class RaiffeisenCommon(TransactionCase):
         cls.currency = cls.env.ref("base.EUR")
         # A fresh database activates only the company currency.
         cls.currency.active = True
-        cls.card_method = cls.env.ref("payment.payment_method_card")
+        cls.card_method = cls.env.ref("payment_raiaccept.payment_method_card")
 
     def _create_tx(self, reference="S00042-1", amount=4000.0, **values):
         vals = {
@@ -42,4 +42,20 @@ class RaiffeisenCommon(TransactionCase):
             "operation": "online_redirect",
         }
         vals.update(values)
-        return self.env["payment.transaction"].create(vals)
+        # Odoo 20 refuses direct writes on transactions unless the caller
+        # vouches for them; core's own tests set the same flag.
+        return self.env["payment.transaction"].with_context(
+            payment_safe_write=True
+        ).create(vals)
+
+    def _process_recorded(self, tx):
+        """Run the processing the payment cron would run for ``tx``.
+
+        Odoo 20 queues provider data as payment.data and processes it
+        asynchronously; tests apply it synchronously here.
+        """
+        for payment_data in tx.payment_data_ids:
+            tx.with_context(payment_safe_write=True)._process(
+                payment_data.payload
+            )
+            payment_data.unlink()
