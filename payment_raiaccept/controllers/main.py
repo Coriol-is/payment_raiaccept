@@ -30,9 +30,12 @@ class RaiffeisenController(http.Controller):
         _logger.info(
             "Raiffeisen return with ref=%s", data.get("ref", "N/A")
         )
-        request.env["payment.transaction"].sudo()._process(
-            "raiffeisen", data
-        )
+        tx_sudo = request.env["payment.transaction"].sudo() \
+            ._search_by_reference("raiffeisen", data)
+        if tx_sudo:
+            # Odoo 20 processes payment data asynchronously: `_record`
+            # stores it and the payment cron runs `_process`.
+            tx_sudo._record(data)
         return request.redirect("/payment/status")
 
     @http.route(
@@ -67,15 +70,15 @@ class RaiffeisenController(http.Controller):
         remote_ip = request.httprequest.remote_addr or "?"
 
         # The provider record is needed for the IP check before any
-        # transaction is resolved. Prefer an enabled provider over a
-        # test one; a disabled provider is used only as a last resort so
+        # transaction is resolved. Prefer a live provider over a test
+        # one; an archived provider is used only as a last resort so
         # that the request is still logged against something.
-        providers = request.env["payment.provider"].sudo().search(
-            [("code", "=", "raiffeisen")], order="id asc",
-        )
+        providers = request.env["payment.provider"].sudo().with_context(
+            active_test=False
+        ).search([("code", "=", "raiffeisen")], order="id asc")
         provider = (
-            providers.filtered(lambda p: p.state == "enabled")[:1]
-            or providers.filtered(lambda p: p.state == "test")[:1]
+            providers.filtered(lambda p: p.active and p.is_live)[:1]
+            or providers.filtered(lambda p: p.active)[:1]
             or providers[:1]
         )
         if not provider:
@@ -146,9 +149,18 @@ class RaiffeisenController(http.Controller):
         )
 
         try:
-            request.env["payment.transaction"].sudo()._process(
-                "raiffeisen", payment_data
-            )
+            tx_sudo = request.env["payment.transaction"].sudo() \
+                ._search_by_reference("raiffeisen", payment_data)
+            if tx_sudo:
+                # Stored now, processed by the payment cron (Odoo 20).
+                tx_sudo._record(payment_data)
+            else:
+                _logger.warning(
+                    "Raiffeisen webhook: no transaction matches "
+                    "(order=%s tx=%s)",
+                    payment_data.get("orderIdentification", "?"),
+                    payment_data.get("transactionId", "?"),
+                )
         except Exception:
             _logger.exception("Raiffeisen webhook processing failed")
             return request.make_json_response(

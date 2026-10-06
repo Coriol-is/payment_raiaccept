@@ -323,6 +323,7 @@ class TestRefunds(RaiffeisenCommon):
              patch(f"{PROVIDER}._raiffeisen_get_transaction",
                    return_value=fixture("transaction_refund.json")):
             self.refund._send_refund_request()
+            self._process_recorded(self.refund)
         self.assertEqual(self.refund.state, "done")
         self.assertEqual(
             self.refund.provider_reference,
@@ -337,6 +338,7 @@ class TestRefunds(RaiffeisenCommon):
              patch(f"{PROVIDER}._raiffeisen_get_transaction",
                    return_value=data):
             self.refund._send_refund_request()
+            self._process_recorded(self.refund)
         self.assertEqual(self.refund.state, "pending")
 
     def test_refund_amount_mismatch_errors(self):
@@ -347,6 +349,7 @@ class TestRefunds(RaiffeisenCommon):
              patch(f"{PROVIDER}._raiffeisen_get_transaction",
                    return_value=data):
             self.refund._send_refund_request()
+            self._process_recorded(self.refund)
         self.assertEqual(self.refund.state, "error")
 
     def test_missing_purchase_id_is_fetched_before_refusing(self):
@@ -374,6 +377,7 @@ class TestRefunds(RaiffeisenCommon):
     def test_refund_without_a_returned_id_errors(self):
         with patch(f"{PROVIDER}._raiffeisen_refund", return_value={}):
             self.refund._send_refund_request()
+            self._process_recorded(self.refund)
         self.assertEqual(self.refund.state, "error")
 
 

@@ -198,6 +198,31 @@ class PaymentTransaction(models.Model):
         if self.provider_code != "raiffeisen":
             return
 
+        if payment_data.get("raiffeisenRefundRequest"):
+            # Queued by `_send_refund_request`: snapshot the refund's
+            # gateway identity on the child transaction first.
+            refund_tx_id = payment_data.get("transactionId") or ""
+            self.raiffeisen_order_id = payment_data.get(
+                "orderIdentification"
+            )
+            self.raiffeisen_tx_id = refund_tx_id
+            self.raiffeisen_gateway_currency = payment_data.get(
+                "gatewayCurrency"
+            ) or "RSD"
+            self.raiffeisen_currency_rate = payment_data.get(
+                "currencyRate"
+            ) or 1.0
+            self.raiffeisen_merchant_reference = payment_data.get(
+                "merchantOrderReference"
+            ) or False
+            self.provider_reference = refund_tx_id
+            if not refund_tx_id:
+                self._set_error(state_message=_(
+                    "Raiffeisen accepted the refund but returned no "
+                    "transaction id, so its outcome cannot be confirmed."
+                ))
+                return
+
         # A webhook is the only place the gateway volunteers the
         # transaction id, and the order endpoint never returns one, so
         # record it whenever it shows up.
@@ -403,8 +428,11 @@ class PaymentTransaction(models.Model):
         if not tx_id:
             # The order endpoint never returns transaction ids, so an
             # older payment may not have one recorded yet. Fetch it now
-            # instead of refusing the refund outright.
-            source_tx._raiffeisen_fetch_purchase_tx_id()
+            # instead of refusing the refund outright. A lookup is safe
+            # to replay, which is what payment_safe_write asserts.
+            source_tx.with_context(
+                payment_safe_write=True
+            )._raiffeisen_fetch_purchase_tx_id()
             tx_id = source_tx.raiffeisen_tx_id
         if not tx_id:
             raise ValidationError(
@@ -423,21 +451,17 @@ class PaymentTransaction(models.Model):
             order_id, tx_id, amount, currency
         )
 
-        refund_tx_id = resp.get("transactionId", "")
-        self.raiffeisen_order_id = order_id
-        self.raiffeisen_tx_id = refund_tx_id
-        self.raiffeisen_gateway_currency = currency
-        self.raiffeisen_currency_rate = rate
-        self.raiffeisen_merchant_reference = \
-            source_tx.raiffeisen_merchant_reference
-        self.provider_reference = refund_tx_id
-
-        if not refund_tx_id:
-            self._set_error(state_message=_(
-                "Raiffeisen accepted the refund but returned no "
-                "transaction id, so its outcome cannot be confirmed."
-            ))
-            return
-
-        # Read the refund's real status back from the gateway.
-        self._raiffeisen_apply_refund_updates()
+        # Odoo 20 forbids writing a transaction outside the processing
+        # cron: the gateway has already acted, so the outcome must not
+        # be lost to a rollback. Queue what we know as payment data;
+        # `_apply_updates` stores the ids and reads the refund's real
+        # status back from the gateway.
+        self._record({
+            "raiffeisenRefundRequest": True,
+            "orderIdentification": order_id,
+            "transactionId": resp.get("transactionId", ""),
+            "gatewayCurrency": currency,
+            "currencyRate": rate,
+            "merchantOrderReference":
+                source_tx.raiffeisen_merchant_reference or "",
+        })
