@@ -30,7 +30,7 @@ API_BASE = "https://trapi.raiaccept.com"
 # someone else's integration. INTEGRATION_VERSION is asserted against
 # the manifest version by the test suite.
 INTEGRATION_VENDOR = "Coriolis Lab"
-INTEGRATION_VERSION = "19.0.2.1.0"
+INTEGRATION_VERSION = "20.0.2.1.0"
 
 # Refresh the access token this many seconds before it actually
 # expires, so a request never starts with a token that dies in flight.
