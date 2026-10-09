@@ -9,9 +9,10 @@
             <group name="provider_credentials" position="inside">
                 <group invisible="code != 'raiffeisen'"
                        name="raiffeisen_credentials"
+                       colspan="2"
                        string="Raiffeisen RaiAccept">
                     <!-- Production credentials: shown only when live -->
-                    <group string="Production Credentials"
+                    <group string="Production Credentials" colspan="2"
                            invisible="not is_live">
                         <field name="raiffeisen_api_username"
                                string="Username"
@@ -24,7 +25,7 @@
                                copy="False"/>
                     </group>
                     <!-- Sandbox credentials: shown only in test mode -->
-                    <group string="Sandbox Credentials"
+                    <group string="Sandbox Credentials" colspan="2"
                            invisible="is_live">
                         <field name="raiffeisen_sandbox_username"
                                string="Sandbox Username"
@@ -35,7 +36,7 @@
                                copy="False"/>
                     </group>
                     <!-- Currency settings: always visible -->
-                    <group string="Currency Settings">
+                    <group string="Currency Settings" colspan="2">
                         <field name="raiffeisen_gateway_currency"/>
                         <field name="raiffeisen_currency_rate"/>
                     </group>
