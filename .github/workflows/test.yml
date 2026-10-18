@@ -8,7 +8,7 @@ on:
 jobs:
   static:
     name: Static checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -39,7 +39,7 @@ jobs:
 
   protocol-tests:
     name: RaiAccept protocol tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -52,7 +52,7 @@ jobs:
 
   odoo-tests:
     name: Odoo 20 integration tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     container:
       image: odoo:20.0
       options: --user root
